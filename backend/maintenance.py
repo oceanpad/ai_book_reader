@@ -63,19 +63,22 @@ def maintain(store: CloudStore) -> None:
                             },
                         )
                     elif state == "UPLOADING" and item["updatedAt"] < timestamp(now - 300):
-                        store.table.update_item(
+                        previous = store.table.update_item(
                             Key={"PK": item["PK"], "SK": item["SK"]},
                             UpdateExpression="SET #state=:failed, workState=:failed, "
-                            "reason=:reason, retryable=:false",
-                            ConditionExpression="#state=:uploading",
+                            "reason=:reason, retryable=:false REMOVE pendingTicket",
+                            ConditionExpression="#state=:uploading AND updatedAt<:cutoff",
+                            ReturnValues="ALL_OLD",
                             ExpressionAttributeNames={"#state": "state"},
                             ExpressionAttributeValues={
                                 ":failed": "FAILED",
                                 ":uploading": "UPLOADING",
+                                ":cutoff": timestamp(now - 300),
                                 ":false": False,
                                 ":reason": "The upload did not finish. Capture the page again.",
                             },
                         )
+                        store.release(previous["Attributes"])
                 except ClientError as exc:
                     if not conditional(exc):
                         raise

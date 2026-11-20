@@ -62,6 +62,32 @@ test("only API requests receive the access token; signed S3 downloads never do",
   expect(fetcher.mock.calls[1][1].headers).toBeUndefined();
 });
 
+test("login page returns a valid tab session to the homepage without contacting Cognito", async () => {
+  sessionStorage.setItem("reader.auth.tokens", JSON.stringify({ accessToken: "live", expiresAt: Date.now() + 3600000 }));
+  vi.stubGlobal("location", { pathname: "/login", assign: vi.fn() });
+  const { restoreSignIn } = await import("./session");
+  await restoreSignIn();
+  expect(history.replaceState).toHaveBeenCalledWith(null, "", "/");
+  expect(location.assign).not.toHaveBeenCalled();
+});
+
+test("missing tab session tries hosted SSO only once, including after browser Back", async () => {
+  const { restoreSignIn } = await import("./session");
+  await Promise.all([restoreSignIn(), restoreSignIn()]);
+  expect(location.assign).toHaveBeenCalledTimes(1);
+  vi.resetModules();
+  await (await import("./session")).restoreSignIn();
+  expect(location.assign).toHaveBeenCalledTimes(1);
+});
+
+test("explicit logout leaves the sign-in button available without an auto-login loop", async () => {
+  const { signOut, restoreSignIn } = await import("./session");
+  signOut();
+  await restoreSignIn();
+  expect(location.assign).toHaveBeenCalledTimes(1);
+  expect(new URL(vi.mocked(location.assign).mock.calls[0][0]).pathname).toBe("/logout");
+});
+
 test("expired login prevents a paid API request", async () => {
   sessionStorage.setItem("reader.auth.tokens", JSON.stringify({ accessToken: "expired", expiresAt: Date.now() - 1 }));
   const fetcher = vi.fn();

@@ -4,6 +4,7 @@ export const authEnabled = Boolean(domain && clientId);
 const tokenKey = "reader.auth.tokens";
 const flowKey = "reader.auth.pkce";
 const changed = "reader-auth-changed";
+const manualLoginKey = "reader.auth.manual-login";
 
 type Tokens = { accessToken: string; expiresAt: number };
 type Flow = { state: string; verifier: string; created: number };
@@ -60,7 +61,24 @@ export function finishSignIn(): Promise<void> {
   return exchange;
 }
 
+let startup: Promise<void> | null = null;
+export function restoreSignIn(): Promise<void> {
+  // StrictMode can mount the gate twice. Both mounts must share the same PKCE flow.
+  return startup ??= (async () => {
+    if (location.pathname === "/auth/callback") await finishSignIn();
+    if (accessToken()) {
+      sessionStorage.removeItem(manualLoginKey);
+      if (location.pathname === "/login") history.replaceState(null, "", "/");
+    } else if (!sessionStorage.getItem(manualLoginKey)) {
+      // Cognito checks its own SSO cookie; only it can decide whether a prompt is needed.
+      sessionStorage.setItem(manualLoginKey, "1");
+      await signIn();
+    }
+  })();
+}
+
 export function signOut() {
+  sessionStorage.setItem(manualLoginKey, "1");
   expireLogin();
   const url = new URL("/logout", domain);
   url.search = new URLSearchParams({ client_id: clientId, logout_uri: location.origin + "/" }).toString();

@@ -10,6 +10,17 @@ async function client(cloud = false) {
   return import("./client");
 }
 
+test.each([false, true])("only show Earlier captures when recordings exist: %s", async hasLegacy => {
+  const { listBooks } = await client();
+  const named = { id: "book", name: "Story" };
+  const items = [{ id: "earlier", name: "Earlier captures" }, named];
+  const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ items }))
+    .mockResolvedValueOnce(Response.json({ items: hasLegacy ? [{ id: "old" }] : [] }));
+  vi.stubGlobal("fetch", fetcher);
+  expect((await listBooks("run", signal)).items).toEqual(hasLegacy ? items : [named]);
+  expect(fetcher.mock.calls[1][0]).toBe("/api/local/readings?book_id=earlier");
+});
+
 test("history starts with the newest page and preserves opaque cursor characters", async () => {
   const { recentReadings } = await client();
   const cursor = "abc/+?=&";
@@ -23,12 +34,66 @@ test("history starts with the newest page and preserves opaque cursor characters
   expect(last.next_cursor).toBeNull();
 });
 
+test("book playback spans all batches in recording order, even in the same second", async () => {
+  const { allBookPages } = await client();
+  const items = Array.from({ length: 12 }, (_, i) => ({ run_id: "run", id: `id-${i}`, created_at: 1 }));
+  const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ items: items.slice(0, 10), next_cursor: "+/" }))
+    .mockResolvedValueOnce(Response.json({ items: items.slice(10), next_cursor: null }));
+  vi.stubGlobal("fetch", fetcher);
+  expect(await allBookPages("run", "book", signal)).toEqual(items.reverse());
+  expect(fetcher.mock.calls.map(([url]) => new URL(url, location.origin).searchParams.get("book_id"))).toEqual(["book", "book"]);
+});
+
+test("retrying a completed read reuses its ID and targets the same book", async () => {
+  const { recordCompletedRead } = await client();
+  const fetcher = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(Response.json({ read_count: 1 }));
+  vi.stubGlobal("fetch", fetcher);
+  const id = crypto.randomUUID();
+  await expect(recordCompletedRead("run", "book", id)).rejects.toThrow("offline");
+  expect(await recordCompletedRead("run", "book", id)).toEqual({ read_count: 1 });
+  for (const [url, init] of fetcher.mock.calls) {
+    expect(url).toBe("/api/local/books/book/completions");
+    expect(JSON.parse(init.body)).toEqual({ completion_id: id });
+  }
+});
+
+test("cover selection uses the page's capture run and keeps the library's owner header", async () => {
+  const { setBookCover } = await client();
+  const cover = { run_id: "older-run", page_id: "page", thumbnail_url: "/thumbnail" };
+  const fetcher = vi.fn().mockResolvedValue(Response.json({ id: "book", name: "Story", cover }));
+  vi.stubGlobal("fetch", fetcher);
+  expect((await setBookCover("library-run", "book", { id: "page", run_id: "older-run" }, signal)).cover).toEqual(cover);
+  expect(fetcher).toHaveBeenCalledWith("/api/local/books/book/cover", expect.objectContaining({
+    method: "POST", headers: { "X-Reader-Run": "library-run", "Content-Type": "application/json" },
+    body: JSON.stringify({ run_id: "older-run", page_id: "page" }),
+  }));
+});
+
+test("book deletion uses its own endpoint and sends the local library run", async () => {
+  const { deleteBook } = await client();
+  const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  await deleteBook("library", "one/book", signal);
+  expect(fetcher).toHaveBeenCalledWith("/api/local/books/one%2Fbook", expect.objectContaining({ method: "DELETE", headers: { "X-Reader-Run": "library" }, signal }));
+});
+
 test("delete targets the saved entry using its owning run", async () => {
   const { discardReading } = await client();
   const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
   vi.stubGlobal("fetch", fetcher);
   await discardReading("older-run", "saved-id");
   expect(fetcher).toHaveBeenCalledWith("/api/local/readings/saved-id", expect.objectContaining({ method: "DELETE", headers: { "X-Reader-Run": "older-run" } }));
+});
+
+test("editing a page sends corrected text to its owning run without uploading an image", async () => {
+  const { editNarration } = await client();
+  const fetcher = vi.fn().mockResolvedValue(Response.json({ state: "QUEUED" }));
+  vi.stubGlobal("fetch", fetcher);
+  await editNarration("older-run", "saved-id", "小恐龙\n生病了", signal);
+  expect(fetcher).toHaveBeenCalledWith("/api/local/readings/saved-id/narration", expect.objectContaining({
+    method: "POST", headers: { "X-Reader-Run": "older-run", "Content-Type": "application/json" },
+    body: JSON.stringify({ narration: "小恐龙\n生病了" }), signal,
+  }));
 });
 
 test("local inline thumbnails need no network and other inline formats are rejected", async () => {

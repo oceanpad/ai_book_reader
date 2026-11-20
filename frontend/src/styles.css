@@ -23,9 +23,22 @@ h3 { font-size: 17px; }
 .camera-card { background: #fffdf8; padding: 25px; border: 1px solid #e1e2d7; border-radius: 15px; box-shadow: 0 5px 25px #233c2e05; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .section-heading h2 { font-size: 22px; }
+.book-list { list-style: none; padding: 0; }
+.book-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid #cccfc1; }
+.book-title { display: flex; align-items: center; gap: .75rem; flex: 1; min-width: 8rem; overflow-wrap: anywhere; text-align: left; }
+.book-read-count { display: block; margin-top: .2rem; color: #506857; font-weight: 400; }
+.book-title img, .book-title .thumbnail-placeholder { width: 3.5rem; height: 4.5rem; flex: none; object-fit: contain; background: #edf1e8; border-radius: .3rem; }
+.new-book { display: grid; gap: 8px; }
+.new-book input { font: inherit; padding: 8px; min-width: 0; }
+.camera-card h1 { overflow-wrap: anywhere; }
 .recent-captures { border-top: 1px solid #dddcd0; margin-top: 20px; padding-top: 12px; }
 .recent-captures ol { list-style: none; padding: 0; }
 .recent-captures li { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.recent-captures li + li { border-top: 1px solid #cccfc1; padding-top: 8px; }
+.capture-review { width: min(90vw, 1000px); border: 0; border-radius: 10px; padding: 16px; }
+.capture-review::backdrop { background: #14261dbf; }
+.capture-review img { display: block; width: 100%; max-height: 75dvh; object-fit: contain; }
+@media (max-width: 540px) { .recent-captures li { flex-wrap: wrap; } .recent-captures .history-play { flex-basis: 100%; } }
 .history-play { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; text-align: left; padding: 8px; }
 .history-play img, .thumbnail-placeholder { width: 56px; height: 56px; flex: none; border-radius: 5px; object-fit: cover; background: #edf1e8; }
 .thumbnail-placeholder { display: grid; place-items: center; color: #50634e; font-size: 12px; }
@@ -37,9 +50,7 @@ h3 { font-size: 17px; }
 .busy-dialog p { margin: 12px 0 20px; }
 input { accent-color: #315e4b; }
 .viewfinder { position: relative; width: 100%; margin: 0 auto; overflow: hidden; border-radius: 9px; background: #e9ede5; }
-.viewfinder video { display: block; width: 100%; height: 100%; }
-.frame-guide { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 8px; box-shadow: 0 0 0 2000px #15241a66; pointer-events: none; }
-.frame-guide span { position: absolute; bottom: 7px; width: 100%; text-align: center; color: #fff; text-shadow: 0 1px 4px #000; font-size: 12px; }
+.viewfinder video { display: block; width: 100%; height: 100%; object-fit: cover; }
 .camera-controls { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 20px; }
 .capture-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; }
 .spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }

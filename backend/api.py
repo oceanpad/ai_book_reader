@@ -9,7 +9,20 @@ from fastapi.responses import JSONResponse
 
 from backend.cloud import CloudStore
 from backend.config import FileSettings, Settings
-from backend.contracts import CaptureState, Health, PublicConfig, ReadingJob, RecentCaptures
+from backend.contracts import (
+    Book,
+    BookCompletion,
+    BookCoverRequest,
+    BookCreate,
+    Books,
+    CaptureState,
+    Health,
+    NarrationEdit,
+    PublicConfig,
+    ReadCount,
+    ReadingJob,
+    RecentCaptures,
+)
 from backend.local_reader import LocalError, LocalReader
 from backend.providers import Providers
 
@@ -105,9 +118,38 @@ def create_app(
 
     if config.mode == "local":
 
+        @app.get("/api/local/books", response_model_exclude_none=True)
+        async def local_books(x_reader_run: RunId) -> Books:
+            return reader.books(str(x_reader_run))
+
+        @app.post("/api/local/books", status_code=201, response_model_exclude_none=True)
+        def local_create_book(x_reader_run: RunId, body: BookCreate) -> Book:
+            return reader.create_book(str(x_reader_run), body.name)
+
+        @app.post("/api/local/books/{book_id}/completions")
+        def local_completion(book_id: str, x_reader_run: RunId, body: BookCompletion) -> ReadCount:
+            count = reader.complete_book(str(x_reader_run), book_id, str(body.completion_id))
+            return ReadCount(read_count=count)
+
+        @app.post("/api/local/books/{book_id}/cover", response_model_exclude_none=True)
+        async def local_cover(book_id: str, x_reader_run: RunId, body: BookCoverRequest) -> Book:
+            return reader.set_cover(str(x_reader_run), book_id, str(body.run_id), str(body.page_id))
+
+        @app.patch("/api/local/books/{book_id}", status_code=204)
+        def local_rename_book(book_id: str, x_reader_run: RunId, body: BookCreate) -> Response:
+            reader.rename_book(str(x_reader_run), book_id, body.name)
+            return Response(status_code=204)
+
+        @app.delete("/api/local/books/{book_id}", status_code=204)
+        async def local_delete_book(book_id: str, x_reader_run: RunId) -> Response:
+            reader.delete_book(str(x_reader_run), book_id)
+            return Response(status_code=204)
+
         @app.get("/api/local/readings", response_model=RecentCaptures)
-        async def recent_readings(x_reader_run: RunId, cursor: str | None = None) -> RecentCaptures:
-            return reader.recent(str(x_reader_run), cursor)
+        async def recent_readings(
+            x_reader_run: RunId, cursor: str | None = None, book_id: str | None = None
+        ) -> RecentCaptures:
+            return reader.recent(str(x_reader_run), cursor, book_id)
 
         @app.post("/api/local/readings/{job_id}", status_code=202, response_model=ReadingJob)
         async def capture(
@@ -115,6 +157,7 @@ def create_app(
             request: Request,
             x_reader_run: RunId,
             mode: Literal["spread", "single"] = "spread",
+            book_id: str | None = None,
         ) -> ReadingJob:
             available = config.public_config()
             if not available.recognition_available or not available.speech_available:
@@ -128,7 +171,7 @@ def create_app(
                 if len(data) + len(chunk) > config.camera.max_upload_bytes:
                     raise LocalError("The captured image exceeds the upload size limit.", 413)
                 data.extend(chunk)
-            return reader.submit(str(x_reader_run), str(job_id), bytes(data), mode)
+            return reader.submit(str(x_reader_run), str(job_id), bytes(data), mode, book_id)
 
         @app.get("/api/local/readings/{job_id}", response_model=ReadingJob)
         async def reading(job_id: UUID, x_reader_run: RunId) -> ReadingJob:
@@ -137,6 +180,21 @@ def create_app(
         @app.post("/api/local/readings/{job_id}/retry", status_code=202, response_model=ReadingJob)
         async def retry(job_id: UUID, x_reader_run: RunId) -> ReadingJob:
             return reader.retry(str(x_reader_run), str(job_id))
+
+        @app.post("/api/local/readings/{job_id}/narration", status_code=202)
+        async def edit_narration(
+            job_id: UUID, x_reader_run: RunId, body: NarrationEdit
+        ) -> ReadingJob:
+            return reader.edit_narration(str(x_reader_run), str(job_id), body.narration)
+
+        @app.get("/api/local/readings/{job_id}/original")
+        async def original(job_id: UUID, x_reader_run: RunId) -> Response:
+            job = reader.get(str(x_reader_run), str(job_id))
+            if not (job.view.state == CaptureState.READY or job.edited) or not job.image:
+                raise LocalError("No original image is available for this capture.", 404)
+            return Response(
+                job.image, media_type="image/jpeg", headers={"Cache-Control": "no-store"}
+            )
 
         @app.get("/api/local/readings/{job_id}/audio/{chunk}")
         async def audio(job_id: UUID, chunk: int, x_reader_run: RunId) -> Response:
@@ -152,10 +210,48 @@ def create_app(
 
     else:
 
-        @app.get("/api/readings", response_model=RecentCaptures)
-        def cloud_recent_readings(request: Request, cursor: str | None = None) -> RecentCaptures:
+        @app.get("/api/books", response_model_exclude_none=True)
+        def cloud_books(request: Request) -> Books:
             store, owner = cloud(request, "reader/read")
-            return store.recent(owner, cursor=cursor)
+            return store.books(owner)
+
+        @app.post("/api/books", status_code=201, response_model_exclude_none=True)
+        def cloud_create_book(request: Request, body: BookCreate) -> Book:
+            store, owner = cloud(request, "reader/write")
+            return store.create_book(owner, body.name)
+
+        @app.post("/api/books/{book_id}/completions")
+        def cloud_completion(book_id: str, request: Request, body: BookCompletion) -> ReadCount:
+            store, owner = cloud(request, "reader/write")
+            return ReadCount(
+                read_count=store.complete_book(owner, book_id, str(body.completion_id))
+            )
+
+        @app.post("/api/books/{book_id}/cover", response_model_exclude_none=True)
+        def cloud_cover(
+            book_id: str, request: Request, body: BookCoverRequest, x_reader_run: RunId
+        ) -> Book:
+            store, owner = cloud(request, "reader/write")
+            return store.set_cover(owner, book_id, str(body.run_id), str(body.page_id))
+
+        @app.patch("/api/books/{book_id}", status_code=204)
+        def cloud_rename_book(book_id: str, request: Request, body: BookCreate) -> Response:
+            store, owner = cloud(request, "reader/write")
+            store.rename_book(owner, book_id, body.name)
+            return Response(status_code=204)
+
+        @app.delete("/api/books/{book_id}", status_code=204)
+        def cloud_delete_book(book_id: str, request: Request) -> Response:
+            store, owner = cloud(request, "reader/write")
+            store.delete_book(owner, book_id)
+            return Response(status_code=204)
+
+        @app.get("/api/readings", response_model=RecentCaptures)
+        def cloud_recent_readings(
+            request: Request, cursor: str | None = None, book_id: str | None = None
+        ) -> RecentCaptures:
+            store, owner = cloud(request, "reader/read")
+            return store.recent(owner, cursor=cursor, book_id=book_id)
 
         @app.post("/api/readings/{job_id}", status_code=202, response_model=ReadingJob)
         async def cloud_capture(
@@ -163,6 +259,7 @@ def create_app(
             request: Request,
             x_reader_run: RunId,
             mode: Literal["spread", "single"] = "spread",
+            book_id: str | None = None,
         ) -> ReadingJob:
             store, owner = cloud(request, "reader/write")
             if request.headers.get("content-type", "").split(";")[0] != "image/jpeg":
@@ -172,7 +269,7 @@ def create_app(
                 if len(data) + len(chunk) > config.camera.max_upload_bytes:
                     raise LocalError("The captured image exceeds the upload size limit.", 413)
                 data.extend(chunk)
-            return store.submit(owner, str(x_reader_run), str(job_id), bytes(data), mode)
+            return store.submit(owner, str(x_reader_run), str(job_id), bytes(data), mode, book_id)
 
         @app.get("/api/readings/{job_id}", response_model=ReadingJob)
         async def cloud_reading(job_id: UUID, request: Request, x_reader_run: RunId) -> ReadingJob:
@@ -183,6 +280,20 @@ def create_app(
         async def cloud_retry(job_id: UUID, request: Request, x_reader_run: RunId) -> ReadingJob:
             store, owner = cloud(request, "reader/write")
             return store.retry(owner, str(x_reader_run), str(job_id))
+
+        @app.post("/api/readings/{job_id}/narration", status_code=202)
+        def cloud_edit_narration(
+            job_id: UUID, request: Request, x_reader_run: RunId, body: NarrationEdit
+        ) -> ReadingJob:
+            store, owner = cloud(request, "reader/write")
+            return store.edit_narration(owner, str(x_reader_run), str(job_id), body.narration)
+
+        @app.get("/api/readings/{job_id}/original")
+        async def cloud_original(
+            job_id: UUID, request: Request, x_reader_run: RunId
+        ) -> dict[str, str]:
+            store, owner = cloud(request, "reader/read")
+            return {"url": store.original_url(owner, str(x_reader_run), str(job_id))}
 
         @app.get("/api/readings/{job_id}/thumbnail")
         async def cloud_thumbnail(

@@ -66,6 +66,9 @@ export type RunId = string;
 export type CreatedAt = number;
 export type Narration = string;
 export type Language = string;
+/**
+ * Zero while edited speech is unavailable
+ */
 export type AudioChunks = number;
 export type ThumbnailUrl = string | null;
 export type NextCursor = string | null;

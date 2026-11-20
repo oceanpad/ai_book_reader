@@ -73,7 +73,8 @@ async def process(store: CloudStore, message: dict[str, Any], providers: Provide
     )
     try:
         image = None
-        if "visionJson" not in item:
+        editing = bool(item.get("audioEdit"))
+        if not editing and "visionJson" not in item:
             image = load_image(store, item)
             item = store.checkpoint(item, token, {"stage": "vision"})
             while True:
@@ -101,31 +102,35 @@ async def process(store: CloudStore, message: dict[str, Any], providers: Provide
             item = store.checkpoint(
                 item, token, {"visionJson": vision.model_dump_json(), "stageCalls": 0}
             )
-        vision = VisionResult.model_validate_json(item["visionJson"])
-        if vision.needs_retake:
-            store.checkpoint(
+        if editing:
+            # Also clean up if the API was interrupted after queuing the edit.
+            store.delete_obsolete_audio(item.get("obsoleteAudio", []))
+            item = store.checkpoint(item, token, {}, remove=("obsoleteAudio",))
+        else:
+            vision = VisionResult.model_validate_json(item["visionJson"])
+            if vision.needs_retake:
+                store.checkpoint(
+                    item,
+                    token,
+                    {
+                        "state": "REJECTED",
+                        "workState": "REJECTED",
+                        "reason": vision.retake_reason,
+                        "retryable": False,
+                    },
+                )
+                store.s3.delete_object(Bucket=store.settings.media_bucket, Key=item["inputKey"])
+                return
+            item = store.checkpoint(
                 item,
                 token,
                 {
-                    "state": "REJECTED",
-                    "workState": "REJECTED",
-                    "reason": vision.retake_reason,
-                    "retryable": False,
+                    "stage": "speech",
+                    "narration": vision.ocr_text or vision.illustration_description,
+                    "language": vision.language,
                 },
             )
-            store.s3.delete_object(Bucket=store.settings.media_bucket, Key=item["inputKey"])
-            return
-        narration = vision.ocr_text or vision.illustration_description
-        item = store.checkpoint(
-            item,
-            token,
-            {
-                "stage": "speech",
-                "narration": narration,
-                "language": vision.language,
-            },
-        )
-        chunks = speech_chunks(narration, int(item["chunkCharacters"]))
+        chunks = speech_chunks(item["narration"], int(item["chunkCharacters"]))
         while len(item["audioKeys"]) < len(chunks):
             index = len(item["audioKeys"])
             if int(item.get("stageCalls", 0)) >= store.settings.limits.stage_attempts:
@@ -152,7 +157,9 @@ async def process(store: CloudStore, message: dict[str, Any], providers: Provide
                 )
             item = store.checkpoint(item, token, {})
             key = (
-                store.prefix("audio", item["owner"], item["run"], item["id"])
+                store.prefix(
+                    "saved" if editing else "audio", item["owner"], item["run"], item["id"]
+                )
                 + f"{token}/{index}.wav"
             )
             store.s3.put_object(
@@ -171,6 +178,14 @@ async def process(store: CloudStore, message: dict[str, Any], providers: Provide
             except LostLease:
                 store.s3.delete_object(Bucket=store.settings.media_bucket, Key=key)
                 raise
+        if editing:
+            store.checkpoint(
+                item,
+                token,
+                {"state": "READY"},
+                remove=("workState", "audioEdit", "stageCalls", "leaseToken", "leaseUntil"),
+            )
+            return
         thumbnail = capture_thumbnail(image if image is not None else load_image(store, item))
         store.complete(item, token, thumbnail)
         for key in item["audioKeys"]:

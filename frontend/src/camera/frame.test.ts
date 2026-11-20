@@ -27,11 +27,18 @@ describe("JPEG capture", () => {
   test("accepts a JPEG without MIME metadata and freezes at the capped dimensions", async () => {
     const canvases = mockCanvas(() => new Blob([bytes]));
     const result = await captureFrame(video, limits);
-    expect(result).toMatchObject({ mode: "spread", width: 1200, height: 500, blob: { type: "image/jpeg" } });
+    expect(result).toMatchObject({ mode: "spread", width: 1200, height: 600, blob: { type: "image/jpeg" } });
     expect(canvases).toHaveLength(1);
-    expect(canvases[0].drawImage).toHaveBeenCalledWith(video, 100, 125, 1800, 750, 0, 0, 1200, 500);
+    expect(canvases[0].drawImage).toHaveBeenCalledWith(video, 0, 0, 2000, 1000, 0, 0, 1200, 600);
     expect(canvases[0].toDataURL).not.toHaveBeenCalled();
     expect(canvases[0]).toMatchObject({ width: 0, height: 0 });
+  });
+
+  test("crops tall camera input to the centered portrait book preview", async () => {
+    const portrait = { videoWidth: 1080, videoHeight: 1920, readyState: 2 } as HTMLVideoElement;
+    const canvases = mockCanvas(() => new Blob([bytes]));
+    await captureFrame(portrait, limits);
+    expect(canvases[0].drawImage).toHaveBeenCalledWith(portrait, 0, 240, 1080, 1440, 0, 0, 900, 1200);
   });
 
   test("Submit stops the camera after freezing pixels, without waiting on the JPEG encoder", async () => {
@@ -67,16 +74,16 @@ describe("JPEG capture", () => {
   test("downsizes the frozen snapshot when lowering quality is insufficient", async () => {
     let calls = 0;
     const canvases = mockCanvas(() => ++calls <= 3 ? new Blob([bytes, new Uint8Array(20)]) : new Blob([bytes]));
-    expect(await captureFrame(video, limits)).toMatchObject({ width: 1020, height: 425 });
+    expect(await captureFrame(video, limits)).toMatchObject({ width: 1020, height: 510 });
     expect(canvases[0].drawImage).toHaveBeenCalledTimes(1);
-    expect(canvases[1].drawImage).toHaveBeenCalledWith(canvases[0], 0, 0, 1020, 425);
+    expect(canvases[1].drawImage).toHaveBeenCalledWith(canvases[0], 0, 0, 1020, 510);
     expect(canvases.every(canvas => !canvas.width && !canvas.height)).toBe(true);
   });
 });
 
 describe("framing", () => {
-  test("captures exactly the centered guide in either mode", () => {
-    expect(frameBounds(2000, 1000, "spread")).toEqual({ x: 100, y: 125, width: 1800, height: 750 });
+  test("captures the entire visible stream by default and preserves the explicit single-page crop", () => {
+    expect(frameBounds(2000, 1000, "spread")).toEqual({ x: 0, y: 0, width: 2000, height: 1000 });
     expect(frameBounds(2000, 1000, "single")).toEqual({ x: 400, y: 125, width: 1200, height: 750 });
     expect(() => frameBounds(0, 0, "spread")).toThrow("not ready");
   });

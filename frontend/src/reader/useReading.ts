@@ -1,22 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { discardReading, readingAudio, readingRequest, submitReading } from "../api/client";
-import { useHistory } from "./useHistory";
-import { authEnabled } from "../auth/session";
+import { pendingState, useHistory } from "./useHistory";
 import type { PlayableCapture, ReadingJob } from "../api/contracts.generated";
 
-type SelectedCapture = { run: string; id: string; frame?: { image: Blob; mode: string }; ready: boolean };
+type SelectedCapture = { run: string; id: string; frame?: { image: Blob; mode: string }; pending?: boolean; checking?: boolean };
 
-export function useReading() {
+export function useReading(run: string, bookId: string) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const run = useRef(crypto.randomUUID());
   const current = useRef<SelectedCapture | null>(null);
-  const history = useHistory(run.current);
+  const history = useHistory(run, bookId, observeHistory);
   const { refreshHistory } = history;
   const [deleting, setDeleting] = useState(false);
   const generation = useRef(0);
   const playbackGeneration = useRef(0);
   const controller = useRef<AbortController | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const urls = useRef<string[]>([]);
   const chunkIndex = useRef(0);
   const paused = useRef(false);
@@ -63,7 +60,6 @@ export function useReading() {
     generation.current += 1;
     playbackGeneration.current += 1;
     controller.current?.abort();
-    if (timer.current) clearTimeout(timer.current);
     const audio = audioRef.current;
     if (audio) { audio.pause(); audio.removeAttribute("src"); audio.load(); }
     for (const url of urls.current) URL.revokeObjectURL(url);
@@ -86,9 +82,9 @@ export function useReading() {
     setPlaying(false);
     setFinished(false);
     setCleanupFailed(false);
-    setCleaning(Boolean(previous));
+    setCleaning(Boolean(discard && previous));
     try {
-      if (previous && (discard || (!authEnabled && !previous.ready))) {
+      if (previous && discard) {
         await discardReading(previous.run, previous.id);
         refreshHistory();
       }
@@ -105,24 +101,39 @@ export function useReading() {
     }
   }, [clear, refreshHistory]);
 
+  // History owns the only poll timer. Fetch full details once a selected page
+  // leaves the queue (or if a legacy/lagging listing does not include it).
+  function observeHistory(items?: PlayableCapture[]) {
+    const selected = current.current;
+    const signal = controller.current?.signal;
+    if (!selected || !signal || signal.aborted || requestBusy.current) return false;
+    const entry = items?.find(item => item.run_id === selected.run && item.id === selected.id);
+    // Retrying the selected failed page from its history card also updates the selection.
+    if (!selected.pending && job?.id === selected.id && job.state === "FAILED" && entry && entry.state !== "FAILED" && !error) selected.pending = true;
+    if (!selected.pending) return false;
+    if (items && !selected.checking) {
+      if (entry?.state && pendingState(entry.state)) {
+        const state = entry.state;
+        setJob(old => old?.id === selected.id && old.state !== state ? { ...old, state } : old);
+      } else {
+        const version = generation.current;
+        selected.checking = true;
+        void readingRequest(selected.run, selected.id, signal).then(result => watch(result, version, signal))
+          .catch(cause => fail(cause, version)).finally(() => { selected.checking = false; });
+      }
+    }
+    return true;
+  }
+
   async function watch(result: ReadingJob, version: number, signal: AbortSignal): Promise<void> {
     const selected = current.current;
     if (version !== generation.current || !selected) return;
     setJob(result);
-    if (result.state === "UPLOADING" || result.state === "QUEUED" || result.state === "PROCESSING") {
-      timer.current = setTimeout(() => {
-        void readingRequest(selected.run, result.id, signal).then((next) => watch(next, version, signal)).catch((cause: unknown) => fail(cause, version));
-      }, 1000);
-      return;
-    }
-    if (result.state !== "READY") {
-      requestBusy.current = false;
-      setBusy(false);
-      return;
-    }
-    if (!selected.ready) refreshHistory();
-    selected.ready = true;
+    selected.pending = pendingState(result.state);
     selected.frame = undefined;
+    requestBusy.current = false;
+    setBusy(false);
+    if (result.state !== "READY") return;
     setPlaybackMessage("Loading audio...");
     for (let index = 0; index < result.audio_chunks; index += 1) {
       const blob = await readingAudio(selected.run, result.id, index, signal);
@@ -132,8 +143,6 @@ export function useReading() {
     if (!urls.current.length || !audioRef.current) throw new Error("No audio was returned for this page. Retry the capture.");
     audioRef.current.src = urls.current[0];
     setAudioReady(true);
-    requestBusy.current = false;
-    setBusy(false);
     if (document.hidden || paused.current) {
       setPlaybackMessage("Audio is ready. Select Play when you are ready.");
     } else await play();
@@ -141,6 +150,7 @@ export function useReading() {
 
   function fail(cause: unknown, version: number) {
     if (version !== generation.current) return;
+    if (current.current) current.current.pending = false;
     requestBusy.current = false;
     setBusy(false);
     setPlaybackMessage(null);
@@ -149,17 +159,13 @@ export function useReading() {
 
   async function openReading(capture: SelectedCapture) {
     if (requestBusy.current) return;
-    const cleared = reset(false);
+    void reset(false);
     const version = generation.current;
     requestBusy.current = true;
     const request = new AbortController();
     controller.current = request;
     paused.current = document.hidden;
     setBusy(true);
-    if (!await cleared || version !== generation.current) {
-      if (version === generation.current) { requestBusy.current = false; setBusy(false); }
-      return;
-    }
     current.current = capture;
     if (request.signal.aborted || document.hidden) {
       fail(new Error("Reading paused. Select Retry / Check Status to continue."), version);
@@ -167,18 +173,16 @@ export function useReading() {
     }
     try {
       const result = capture.frame
-        ? await submitReading(capture.run, capture.id, capture.frame.image, capture.frame.mode, request.signal)
+        ? await submitReading(capture.run, capture.id, capture.frame.image, capture.frame.mode, request.signal, bookId)
         : await readingRequest(capture.run, capture.id, request.signal);
+      if (version !== generation.current) return;
+      refreshHistory();
       await watch(result, version, request.signal);
-    } catch (cause) { fail(cause, version); if (!capture.frame) refreshHistory(); }
+    } catch (cause) { fail(cause, version); }
   }
 
   function submit(image: Blob, mode: string) {
-    return openReading({ run: run.current, id: crypto.randomUUID(), frame: { image, mode }, ready: false });
-  }
-
-  function selectHistory(item: PlayableCapture) {
-    return openReading({ run: item.run_id, id: item.id, ready: true });
+    return openReading({ run, id: crypto.randomUUID(), frame: { image, mode } });
   }
 
   async function remove(item: PlayableCapture) {
@@ -197,22 +201,20 @@ export function useReading() {
   const interrupt = useCallback(() => {
     if (!requestBusy.current) return;
     controller.current?.abort();
-    // If cleanup is still finishing, openReading observes the aborted signal before submitting.
-    if (!current.current) { setBusy(false); return; }
     generation.current += 1;
-    if (timer.current) clearTimeout(timer.current);
     requestBusy.current = false;
     setBusy(false);
     setPlaybackMessage(null);
     setError("Reading paused. Select Retry / Check Status to continue.");
   }, []);
 
-  async function recover() {
+  async function recover(updated?: ReadingJob) {
     const capture = current.current;
-    if (!capture || requestBusy.current) return;
+    if (!capture || requestBusy.current || (updated && capture.id !== updated.id)) return;
     requestBusy.current = true;
     controller.current?.abort();
-    if (timer.current) clearTimeout(timer.current);
+    capture.pending = false;
+    capture.checking = false;
     controller.current = new AbortController();
     const version = ++generation.current;
     setError(null);
@@ -224,10 +226,13 @@ export function useReading() {
     // A failed media fetch must not append old chunks or regenerate paid audio.
     for (const url of urls.current) URL.revokeObjectURL(url);
     urls.current = [];
+    chunkIndex.current = 0;
     try {
-      const result = !job && capture.frame
-        ? await submitReading(capture.run, capture.id, capture.frame.image, capture.frame.mode, controller.current.signal)
-        : await readingRequest(capture.run, capture.id, controller.current.signal, job?.state === "FAILED");
+      const result = updated ?? (!job && capture.frame
+        ? await submitReading(capture.run, capture.id, capture.frame.image, capture.frame.mode, controller.current.signal, bookId)
+        : await readingRequest(capture.run, capture.id, controller.current.signal, job?.state === "FAILED"));
+      if (version !== generation.current) return;
+      refreshHistory();
       await watch(result, version, controller.current.signal);
     } catch (cause) { fail(cause, version); }
   }
@@ -242,6 +247,7 @@ export function useReading() {
   }
 
   function ended() {
+    if (!urls.current.length || !audioRef.current?.ended || paused.current || document.hidden) return;
     chunkIndex.current += 1;
     if (chunkIndex.current < urls.current.length && audioRef.current) {
       audioRef.current.src = urls.current[chunkIndex.current];
@@ -259,14 +265,9 @@ export function useReading() {
     return () => document.removeEventListener("visibilitychange", hidden);
   }, [pause, interrupt]);
 
-  useEffect(() => () => {
-    const previous = clear();
-    if (!authEnabled && previous && !previous.ready) void discardReading(previous.run, previous.id).catch((cause: unknown) => {
-      console.error("Local reading cleanup failed", cause instanceof Error ? cause.message : "Unknown error");
-    });
-  }, [clear]);
+  useEffect(() => () => { clear(); }, [clear]);
 
   return { audioRef, job, busy, cleaning, cleanupFailed, error, playbackMessage, audioReady, playing, finished,
-    history, deleting, remove, interrupt, selectHistory, submit, reset, recover, play, pause, replay, ended,
+    history, deleting, remove, interrupt, submit, reset, recover, play, pause, replay, ended,
     playbackError: () => { setPlaying(false); setPlaybackMessage("This browser could not decode the audio. Select Replay or capture another page."); } };
 }

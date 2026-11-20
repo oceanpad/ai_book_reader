@@ -1,5 +1,6 @@
 from enum import StrEnum
 from typing import Literal, Self
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -63,7 +64,7 @@ class CameraConfig(Contract):
 
 
 class Limits(Contract):
-    max_captures_ahead: int = Field(default=3, ge=1, le=3)
+    max_captures_ahead: int = Field(default=10, ge=1, le=10)
     max_pages_per_session: int = Field(default=100, ge=1, le=100)
     capture_attempts_per_day: int = Field(default=200, ge=1, le=200)
     speech_attempts_per_day: int = Field(default=200, ge=1, le=200)
@@ -125,6 +126,44 @@ class ReadingJob(Contract):
     prompt_version: str = VISION_PROMPT_VERSION
 
 
+class NarrationEdit(Contract):
+    narration: str = Field(strict=True, min_length=1, max_length=20000)
+
+
+class BookCreate(Contract):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class BookCompletion(Contract):
+    completion_id: UUID
+
+
+class ReadCount(Contract):
+    read_count: int
+
+
+class BookCoverRequest(Contract):
+    run_id: UUID
+    page_id: UUID
+
+
+class BookCover(Contract):
+    run_id: str
+    page_id: str
+    thumbnail_url: str
+
+
+class Book(BookCreate):
+    id: str
+    cover: BookCover | None = None
+    read_count: int | None = None
+
+
+class Books(Contract):
+    items: list[Book]
+
+
+EARLIER = Book(id="earlier", name="Earlier captures")
 RECENT_CAPTURE_LIMIT = 10
 
 
@@ -134,7 +173,12 @@ class PlayableCapture(Contract):
     created_at: int = Field(description="Capture creation time in Unix seconds")
     narration: str
     language: str
-    audio_chunks: int = Field(ge=1)
+    audio_chunks: int = Field(ge=0, description="Zero while speech is unavailable")
+    state: CaptureState | None = Field(
+        default=None, exclude_if=lambda value: value is None, description="Omitted for READY pages"
+    )
+    retryable: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     thumbnail_url: str | None = None
 
 

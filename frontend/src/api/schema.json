@@ -208,7 +208,8 @@
           "type": "string"
         },
         "audio_chunks": {
-          "minimum": 1,
+          "description": "Zero while edited speech is unavailable",
+          "minimum": 0,
           "title": "Audio Chunks",
           "type": "integer"
         },

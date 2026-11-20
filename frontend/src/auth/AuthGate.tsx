@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { accessToken, authEnabled, finishSignIn, signIn, subscribeAuth } from "./session";
+import { accessToken, authEnabled, restoreSignIn, signIn, subscribeAuth } from "./session";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(!authEnabled);
@@ -8,7 +8,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!authEnabled) return;
     const update = () => setSignedIn(Boolean(accessToken()));
-    void finishSignIn().then(() => { update(); setReady(true); }).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : "Sign-in failed."); setReady(true); });
+    void restoreSignIn().then(() => { update(); setReady(true); }).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : "Sign-in failed."); setReady(true); });
     return subscribeAuth(update);
   }, []);
   if (!authEnabled || (ready && signedIn)) return children;

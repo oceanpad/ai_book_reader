@@ -1,8 +1,9 @@
 import type { CameraConfig } from "../api/contracts.generated";
 
+export const MIN_PAGE_ASPECT = 3 / 4;
 export type CaptureMode = "spread" | "single";
-export const FRAMES = {
-  spread: { width: 0.9, height: 0.75 },
+const FRAMES = {
+  spread: { width: 1, height: 1 },
   single: { width: 0.6, height: 0.75 },
 } satisfies Record<CaptureMode, { width: number; height: number }>;
 
@@ -11,7 +12,7 @@ export function frameBounds(width: number, height: number, mode: CaptureMode) {
     throw new Error("The camera is not ready. Wait for the preview before capturing.");
   }
   const cropWidth = Math.floor(width * FRAMES[mode].width);
-  const cropHeight = Math.floor(height * FRAMES[mode].height);
+  const cropHeight = Math.floor(mode === "spread" ? Math.min(height, width / MIN_PAGE_ASPECT) : height * FRAMES[mode].height);
   return {
     x: Math.floor((width - cropWidth) / 2),
     y: Math.floor((height - cropHeight) / 2),

@@ -10,6 +10,9 @@ test("foundation keeps media private and protects all non-health AWS routes", ()
   const auth = new ReaderAuthStack(app, "TestAuth", { env });
   const api = new ReaderApiStack(app, "TestApi", { env, data, userPool: auth.userPool, userPoolClient: auth.userPoolClient, codePath: "backend" });
   const web = new ReaderWebStack(app, "TestWeb", { env, apiDomain: api.apiDomain, cognitoDomain: auth.domain, media: data.media });
+  Template.fromStack(data).hasResourceProperties("AWS::SQS::Queue", {
+    FifoQueue: true, ContentBasedDeduplication: true, RedrivePolicy: Match.objectLike({ maxReceiveCount: 3 }),
+  });
   Template.fromStack(data).hasResourceProperties("AWS::S3::Bucket", {
     PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
     VersioningConfiguration: Match.absent(),
@@ -25,6 +28,9 @@ test("foundation keeps media private and protects all non-health AWS routes", ()
       Match.objectLike({ IndexName: "MaintenanceIndex" }),
       Match.objectLike({ IndexName: "OwnerCapturesIndex", KeySchema: [
         { AttributeName: "owner", KeyType: "HASH" }, { AttributeName: "createdAt", KeyType: "RANGE" },
+      ] }),
+      Match.objectLike({ IndexName: "BookCapturesIndex", KeySchema: [
+        { AttributeName: "ownerBook", KeyType: "HASH" }, { AttributeName: "createdAt", KeyType: "RANGE" },
       ] }),
     ]),
   });
@@ -42,7 +48,13 @@ test("foundation keeps media private and protects all non-health AWS routes", ()
     Scopes: Match.arrayWith([Match.objectLike({ ScopeName: "read" }), Match.objectLike({ ScopeName: "write" })]),
   });
   const apiTemplate = Template.fromStack(api);
-  apiTemplate.resourceCountIs("AWS::ApiGatewayV2::Route", 9);
+  apiTemplate.resourceCountIs("AWS::ApiGatewayV2::Route", 17);
+  for (const route of ["POST /api/books/{book_id}/completions", "PATCH /api/books/{book_id}", "POST /api/books/{book_id}/cover", "DELETE /api/books/{book_id}", "POST /api/readings/{job_id}/narration"]) {
+    apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: route, AuthorizationType: "JWT", AuthorizationScopes: ["reader/write"] });
+  }
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/books", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "POST /api/books", AuthorizationType: "JWT", AuthorizationScopes: ["reader/write"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings/{job_id}/original", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
   apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings/{job_id}/thumbnail", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
   apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
   apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/config", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });

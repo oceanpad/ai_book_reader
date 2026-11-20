@@ -33,6 +33,8 @@ export class ReaderDataStack extends Stack {
   readonly media: s3.Bucket;
   readonly queue: sqs.Queue;
   readonly deadLetters: sqs.Queue;
+  readonly orderedQueue: sqs.Queue;
+  readonly orderedDeadLetters: sqs.Queue;
   readonly providerSecret: secrets.Secret;
 
   constructor(scope: Construct, id: string, props: StackProps & { webOrigin?: string } = {}) {
@@ -57,6 +59,13 @@ export class ReaderDataStack extends Stack {
     table.addGlobalSecondaryIndex({
       indexName: "OwnerCapturesIndex",
       partitionKey: { name: "owner", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.INCLUDE,
+      nonKeyAttributes: ["state"],
+    });
+    table.addGlobalSecondaryIndex({
+      indexName: "BookCapturesIndex",
+      partitionKey: { name: "ownerBook", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "createdAt", type: dynamodb.AttributeType.NUMBER },
       projectionType: dynamodb.ProjectionType.INCLUDE,
       nonKeyAttributes: ["state"],
@@ -86,13 +95,24 @@ export class ReaderDataStack extends Stack {
       retentionPeriod: Duration.days(1),
       deadLetterQueue: { queue: deadLetters, maxReceiveCount: 3 },
     });
+    this.orderedDeadLetters = new sqs.Queue(this, "PageDeadLetters", {
+      fifo: true, encryption: sqs.QueueEncryption.SQS_MANAGED, enforceSSL: true, retentionPeriod: Duration.days(14),
+    });
+    this.orderedQueue = new sqs.Queue(this, "PageQueue", {
+      fifo: true, contentBasedDeduplication: true, encryption: sqs.QueueEncryption.SQS_MANAGED, enforceSSL: true,
+      visibilityTimeout: Duration.minutes(60), retentionPeriod: Duration.days(1),
+      deadLetterQueue: { queue: this.orderedDeadLetters, maxReceiveCount: 3 },
+    });
+    // Keep exports referenced by the running API stack during the FIFO cutover.
+    this.exportValue(this.queue.queueUrl);
+    this.exportValue(this.queue.queueName);
     this.providerSecret = new secrets.Secret(this, "ProviderCredentials", {
       description: "Server-only book reader provider credentials; populated outside CloudFormation",
     });
     new CfnOutput(this, "TableName", { value: this.table.tableName });
     new CfnOutput(this, "MediaBucketName", { value: this.media.bucketName });
     new CfnOutput(this, "ProviderSecretArn", { value: this.providerSecret.secretArn });
-    new CfnOutput(this, "QueueUrl", { value: this.queue.queueUrl });
+    new CfnOutput(this, "QueueUrl", { value: this.orderedQueue.queueUrl });
   }
 }
 
@@ -154,7 +174,7 @@ export class ReaderApiStack extends Stack {
       READER_MODE: "aws", READER_AWS_REGION: this.region,
       READER_TABLE_NAME: props.data.table.tableName,
       READER_MEDIA_BUCKET: props.data.media.bucketName,
-      READER_QUEUE_URL: props.data.queue.queueUrl,
+      READER_QUEUE_URL: props.data.orderedQueue.queueUrl,
       READER_SECRET_ARN: props.data.providerSecret.secretArn,
     };
     const apiFunction = new lambda.Function(this, "HealthApi", {
@@ -192,13 +212,17 @@ export class ReaderApiStack extends Stack {
       props.data.media.grantReadWrite(fn);
     }
     props.data.providerSecret.grantRead(worker);
-    props.data.queue.grantSendMessages(dispatcher);
-    props.data.queue.grantSendMessages(maintenance);
+    props.data.orderedQueue.grantSendMessages(dispatcher);
+    props.data.orderedQueue.grantSendMessages(maintenance);
     dispatcher.addEventSource(new DynamoEventSource(props.data.table, {
       startingPosition: lambda.StartingPosition.TRIM_HORIZON, batchSize: 10,
       retryAttempts: 5, bisectBatchOnError: true, reportBatchItemFailures: true,
       onFailure: new SqsDlq(props.data.deadLetters),
     }));
+    worker.addEventSource(new SqsEventSource(props.data.orderedQueue, {
+      batchSize: 1, reportBatchItemFailures: true,
+    }));
+    // Drain any messages accepted before the migration; new submissions use the FIFO queue.
     worker.addEventSource(new SqsEventSource(props.data.queue, {
       batchSize: 1, reportBatchItemFailures: true, maxConcurrency: 2,
     }));
@@ -211,7 +235,7 @@ export class ReaderApiStack extends Stack {
       const alarm = new cloudwatch.Alarm(this, `${name}Errors`, { metric: fn.metricErrors(), threshold: 1, evaluationPeriods: 1, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING });
       alarm.addAlarmAction(new actions.SnsAction(alerts));
     }
-    for (const [name, metric, threshold] of [["DeadLetters", props.data.deadLetters.metricApproximateNumberOfMessagesVisible(), 1], ["QueueAge", props.data.queue.metricApproximateAgeOfOldestMessage(), 600]] as const) {
+    for (const [name, metric, threshold] of [["DeadLetters", props.data.deadLetters.metricApproximateNumberOfMessagesVisible(), 1], ["PageDeadLetters", props.data.orderedDeadLetters.metricApproximateNumberOfMessagesVisible(), 1], ["QueueAge", props.data.orderedQueue.metricApproximateAgeOfOldestMessage(), 600]] as const) {
       new cloudwatch.Alarm(this, name, { metric, threshold, evaluationPeriods: 1, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING }).addAlarmAction(new actions.SnsAction(alerts));
     }
     const api = new apigw.HttpApi(this, "ReaderHttpApi", { apiName: "ai-book-reader" });
@@ -223,12 +247,20 @@ export class ReaderApiStack extends Stack {
     api.addRoutes({ path: "/api/health", methods: [apigw.HttpMethod.GET], integration });
     api.addRoutes({ path: "/api/config", methods: [apigw.HttpMethod.GET], integration, authorizer, authorizationScopes: ["reader/read"] });
     for (const [route, method, scope] of [
+      ["/api/books", apigw.HttpMethod.GET, "reader/read"],
+      ["/api/books", apigw.HttpMethod.POST, "reader/write"],
+      ["/api/books/{book_id}/completions", apigw.HttpMethod.POST, "reader/write"],
+      ["/api/books/{book_id}/cover", apigw.HttpMethod.POST, "reader/write"],
+      ["/api/books/{book_id}", apigw.HttpMethod.PATCH, "reader/write"],
+      ["/api/books/{book_id}", apigw.HttpMethod.DELETE, "reader/write"],
+      ["/api/readings/{job_id}/narration", apigw.HttpMethod.POST, "reader/write"],
       ["/api/readings", apigw.HttpMethod.GET, "reader/read"],
       ["/api/readings/{job_id}", apigw.HttpMethod.POST, "reader/write"],
       ["/api/readings/{job_id}", apigw.HttpMethod.GET, "reader/read"],
       ["/api/readings/{job_id}", apigw.HttpMethod.DELETE, "reader/write"],
       ["/api/readings/{job_id}/retry", apigw.HttpMethod.POST, "reader/write"],
       ["/api/readings/{job_id}/audio/{chunk}", apigw.HttpMethod.GET, "reader/read"],
+      ["/api/readings/{job_id}/original", apigw.HttpMethod.GET, "reader/read"],
       ["/api/readings/{job_id}/thumbnail", apigw.HttpMethod.GET, "reader/read"],
     ] as const) api.addRoutes({ path: route, methods: [method], integration, authorizer, authorizationScopes: [scope] });
     const stage = api.defaultStage?.node.defaultChild as apigw.CfnStage;

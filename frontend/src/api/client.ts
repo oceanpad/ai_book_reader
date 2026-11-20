@@ -1,4 +1,4 @@
-import type { PublicConfig, ReadingJob, RecentCaptures } from "./contracts.generated";
+import type { PlayableCapture, PublicConfig, ReadingJob, RecentCaptures } from "./contracts.generated";
 import { apiFetch, authEnabled } from "../auth/session";
 
 const readings = authEnabled ? "/api/readings" : "/api/local/readings";
@@ -13,10 +13,57 @@ async function checked(response: Response): Promise<Response> {
   return response;
 }
 
-export async function submitReading(run: string, id: string, image: Blob, mode: string, signal: AbortSignal): Promise<ReadingJob> {
-  const response = await checked(await apiFetch(`${readings}/${id}?mode=${mode}`, {
+export type Book = { id: string; name: string; read_count?: number; cover?: { run_id: string; page_id: string; thumbnail_url: string } | null };
+const books = authEnabled ? "/api/books" : "/api/local/books";
+
+export async function listBooks(run: string, signal: AbortSignal): Promise<{items: Book[]}> {
+  const library: { items: Book[] } = await (await checked(await apiFetch(books, { signal, cache: "no-store", headers: { "X-Reader-Run": run } }))).json();
+  if (!library.items.some(book => book.id === "earlier")) return library;
+  const legacy = await recentReadings(run, signal, undefined, "earlier");
+  return legacy.items.length ? library : { items: library.items.filter(book => book.id !== "earlier") };
+}
+
+export async function recordCompletedRead(run: string, bookId: string, completionId: string): Promise<{ read_count: number }> {
+  return (await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}/completions`, {
+    method: "POST", keepalive: true, signal: AbortSignal.timeout(20000),
+    headers: { "Content-Type": "application/json", "X-Reader-Run": run },
+    body: JSON.stringify({ completion_id: completionId }),
+  }))).json();
+}
+
+export async function setBookCover(run: string, bookId: string, page: Pick<PlayableCapture, "run_id" | "id">, signal: AbortSignal): Promise<Book> {
+  return (await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}/cover`, {
+    method: "POST", signal, headers: { "Content-Type": "application/json", "X-Reader-Run": run },
+    body: JSON.stringify({ run_id: page.run_id, page_id: page.id }),
+  }))).json();
+}
+
+export async function renameBook(run: string, bookId: string, name: string, signal: AbortSignal): Promise<void> {
+  await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}`, {
+    method: "PATCH", signal, headers: { "Content-Type": "application/json", "X-Reader-Run": run }, body: JSON.stringify({ name }),
+  }));
+}
+
+export async function deleteBook(run: string, bookId: string, signal: AbortSignal): Promise<void> {
+  await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}`, { method: "DELETE", signal, headers: { "X-Reader-Run": run } }));
+}
+
+export async function createBook(run: string, name: string, signal: AbortSignal): Promise<Book> {
+  return (await checked(await apiFetch(books, { method: "POST", signal, body: JSON.stringify({name}), headers: { "Content-Type": "application/json", "X-Reader-Run": run } }))).json();
+}
+
+export async function submitReading(run: string, id: string, image: Blob, mode: string, signal: AbortSignal, bookId: string): Promise<ReadingJob> {
+  const response = await checked(await apiFetch(`${readings}/${id}?${new URLSearchParams({ mode, book_id: bookId })}`, {
     method: "POST", body: image, signal,
     headers: { "Content-Type": "image/jpeg", "X-Reader-Run": run },
+  }));
+  return response.json();
+}
+
+export async function editNarration(run: string, id: string, narration: string, signal: AbortSignal): Promise<ReadingJob> {
+  const response = await checked(await apiFetch(`${readings}/${id}/narration`, {
+    method: "POST", signal, body: JSON.stringify({ narration }),
+    headers: { "Content-Type": "application/json", "X-Reader-Run": run },
   }));
   return response.json();
 }
@@ -28,8 +75,23 @@ export async function readingRequest(run: string, id: string, signal: AbortSigna
   return response.json();
 }
 
-export async function recentReadings(run: string, signal: AbortSignal, cursor?: string): Promise<RecentCaptures> {
-  const query = cursor === undefined ? "" : `?${new URLSearchParams({ cursor })}`;
+export async function allBookPages(run: string, bookId: string, signal: AbortSignal): Promise<PlayableCapture[]> {
+  const pages = new Map<string, PlayableCapture>();
+  let cursor: string | undefined;
+  do {
+    const result = await recentReadings(run, signal, cursor, bookId);
+    for (const page of result.items) pages.set(`${page.run_id}/${page.id}`, page);
+    cursor = result.next_cursor ?? undefined;
+  } while (cursor);
+  // Preserve the server's sub-second capture order, including across batch boundaries.
+  return [...pages.values()].reverse();
+}
+
+export async function recentReadings(run: string, signal: AbortSignal, cursor?: string, bookId?: string): Promise<RecentCaptures> {
+  const params = new URLSearchParams();
+  if (cursor) params.set("cursor", cursor);
+  if (bookId) params.set("book_id", bookId);
+  const query = params.size ? `?${params}` : "";
   const response = await checked(await apiFetch(readings + query, {
     signal, cache: "no-store", headers: { "X-Reader-Run": run },
   }));
@@ -52,7 +114,15 @@ export async function thumbnailSource(url: string, run: string, signal: AbortSig
 }
 
 export async function readingAudio(run: string, id: string, chunk: number, signal: AbortSignal): Promise<Blob> {
-  const response = await checked(await apiFetch(`${readings}/${id}/audio/${chunk}`, {
+  return readingMedia(run, id, `audio/${chunk}`, signal);
+}
+
+export function readingOriginal(run: string, id: string, signal: AbortSignal): Promise<Blob> {
+  return readingMedia(run, id, "original", signal);
+}
+
+async function readingMedia(run: string, id: string, resource: string, signal: AbortSignal): Promise<Blob> {
+  const response = await checked(await apiFetch(`${readings}/${id}/${resource}`, {
     signal, cache: "no-store", headers: { "X-Reader-Run": run },
   }));
   if (!authEnabled) return response.blob();

@@ -49,6 +49,6 @@ def test_invalid_or_unsafe_narration_combinations_are_rejected(overrides) -> Non
 
 def test_configuration_enforces_capture_bound_and_coherent_thresholds() -> None:
     with pytest.raises(ValidationError):
-        Limits(max_captures_ahead=4)
+        Limits(max_captures_ahead=11)
     with pytest.raises(ValidationError):
         CameraConfig(scene_change_threshold=0.01)

@@ -43,7 +43,7 @@ Publishing `READY` releases the cloud run’s active-job slot in the same transa
 
 Discard marks the selected job `CANCELLED` and releases the slot only if that job still holds it. API/media requests then return 404. In-flight work may finish a provider request but cannot publish a new accepted result. Private object cleanup repeats for 20 minutes, exceeding API/worker lifetimes, while cancellation tombstones remain 24 hours. This covers late uploads and media writes. Saved history media is exempt from temporary-object expiry.
 
-Unfinished work expires after one hour. New READY thumbnails, narration and audio are retained, so storage costs can grow. Before removing a Cognito user, delete their saved captures and verify media cleanup; deleting the identity alone does not erase saved history. DynamoDB TTL removal of temporary records is asynchronous. Do not delete unrelated users' data.
+Unfinished work expires after one hour. New READY full-size page images, thumbnails, narration and audio are retained, so storage costs can grow. Before removing a Cognito user, delete their saved captures and verify media cleanup; deleting the identity alone does not erase saved history. DynamoDB TTL removal of temporary records is asynchronous. Do not delete unrelated users' data.
 
 ## Redeploy and rollback
 

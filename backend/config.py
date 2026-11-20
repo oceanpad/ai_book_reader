@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     mode: Literal["local", "aws"] = "local"
     aws_region: str = "ap-southeast-1"
+    local_books_path: str = ".local/books.sqlite3"
     table_name: str = ""
     media_bucket: str = ""
     queue_url: str = ""
