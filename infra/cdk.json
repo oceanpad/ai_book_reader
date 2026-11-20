@@ -1,0 +1,8 @@
+{
+  "app": "npx --no-install tsx bin/reader.ts",
+  "versionReporting": false,
+  "context": {
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
+}

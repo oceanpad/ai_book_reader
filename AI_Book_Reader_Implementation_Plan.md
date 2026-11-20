@@ -1,178 +1,325 @@
-# AI Book Reader — Codex Implementation Plan
+# AI Book Reader — Actionable Implementation Plan
 
-## Objective
+Updated: 2026-11-20, Asia/Singapore. Status: M0 complete; private manual capture -> recognition -> narration deployed to AWS and smoke-tested with managed login. Full M1 quality/voice/device gates and M2/M3/full release remain pending.
 
-Build a mobile-friendly web application that uses a browser camera to detect a possible page turn and capture a stationary image. An OpenAI vision model checks whether the capture shows a book page and whether it contains words. It transcribes readable words or, for a clearly wordless illustration, writes a short description for a kindergarten audience. The app reads either script aloud in a warm teacher voice. Users can sign in, browse saved pages and replay cached audio without re-running recognition.
+Build a browser app that recognizes a stable storybook page, extracts its words, and reads them aloud in a warm kindergarten-teacher voice. For a book page containing illustrations without text, generate a short, gentle description. Save accepted pages privately and read new captures after the current narration finishes.
 
-**MVP defaults:** single user-owned library of books; one visible page per capture; English and Chinese reading (but do not hardcode language restrictions); desktop or phone camera; no synchronized text highlighting; automatic reading enabled by default, with manual controls.
+The repository contains the React/TypeScript frontend, Python API, local and persistent AWS recognition/speech jobs, Cognito/PKCE login, shared contracts, tests, packaging/deployment commands, and four deployed CDK stacks. The reference project is `../kitty_cards_github/`; its patterns were inspected and reused with independent resources and an explicitly verified deployment account. See [README.md](README.md) for setup and current limitations. Saved sessions, ordered reading ahead, and cross-capture deduplication are not implemented yet.
 
-## Required stack
+Planning estimate: 8–12 focused engineering days. Reassess after the camera/model evaluation in M1. Check each milestone item only after completing it.
 
-| Layer | Implementation |
+## 1. MVP decisions
+
+These defaults allow implementation to start without blocking on optional preferences.
+
+| Area | MVP decision |
 | --- | --- |
-| Frontend | React, TypeScript, Vite, responsive CSS, browser `getUserMedia` + Canvas |
-| Frontend hosting | Private S3 bucket + CloudFront distribution with Origin Access Control; HTTPS |
-| Login | Amazon Cognito User Pool (hosted sign-in or supported authorization-code + PKCE flow) |
-| HTTP API | Amazon API Gateway HTTP API with Cognito JWT authorizer |
-| Backend | AWS Lambda (Python 3.12 or Node.js 22), least-privilege IAM |
-| Page images and audio | Private S3 bucket(s), short-lived presigned URLs |
-| Book/page metadata | DynamoDB |
-| Page recognition | OpenAI Responses API with a vision-capable model, initially `gpt-6-luna`, for book-page detection, word detection, OCR and illustration descriptions in one request (model ID configurable via environment) |
-| Speech | OpenAI **Realtime API** using a currently supported audio-generation model, initially `gpt-realtime-2.1-mini`, behind a backend adapter |
-| IaC | AWS CDK or Terraform; prefer CDK TypeScript for the MVP |
+| Account | One adult account in Cognito; public registration disabled; children use the signed-in reading screen. |
+| Devices | Mobile Safari on iPhone/iPad and Chrome on Android; desktop Chrome for development/webcam use. Record the exact tested devices and browser versions. |
+| Capture unit | One framed image containing a single page or an open spread. Default to spread mode; offer single-page mode. A spread is stored and narrated as one capture in the correct reading order. |
+| Language | Preserve the printed language; no automatic translation. English is the initial acceptance baseline. Evaluate additional launch languages in M1 before claiming support. |
+| Reading style | Preserve printed words. Use a warm, sweet adult female voice with clear pronunciation and gentle pacing. Apply teacher-style wording to illustration descriptions. |
+| Picture-only pages | Describe visible illustrations in 1–3 short sentences. A valid description counts as narration and follows the same save/playback pipeline as OCR text. |
+| Unreadable text | Ask for a clearer capture. Never treat unreadable text as absent text or invent missing words. |
+| Duplicates | Skip automatic permanent storage and playback of the same page within a session. Repeated words on a visually different page are valid. Explicit Replay remains available. |
+| Reading ahead | Capture/analyze while narration plays. Preserve capture order. Allow at most three unresolved or unplayed captures ahead of the current narration; pause capture when full. |
+| History | Save accepted images, text/descriptions, and audio. Support reopening a session, explicit replay, and session deletion. |
+| Hosting | AWS region `ap-southeast-1` by default. Verify the configured AWS account/profile during deployment setup. |
+| Providers | OpenAI vision. Prefer `google/gemini-3.8-flash-tts` via OpenRouter for speech if a key is available; otherwise validate the supported OpenAI speech workflow in M1. Pin the selected models and voice in server configuration. |
 
-**Important OpenAI compatibility note (as of November 2026):** the older `/v1/audio/speech` TTS models (`gpt-4o-mini-tts`, `tts-1`, `tts-1-hd`) are scheduled to shut down January 6, 2027. Do not build new production functionality dependent on those models. Implement the current Realtime API workflow according to the latest official OpenAI documentation. Keep speech synthesis behind an interface so the implementation can change without touching page or UI logic.
+Defer public registration, separate child profiles, public book sharing, offline OCR/TTS, native apps, voice cloning, translation, word highlighting, and custom computer-vision model training.
 
-## Architecture
+## 2. Architecture and responsibilities
 
-```mermaid
-flowchart TD
-    U["Authenticated browser"] --> CF["CloudFront + private S3 frontend"]
-    U --> C["Canvas page-change detector"]
-    U --> AP["API Gateway + JWT authorizer"]
-    AP --> L["Lambda handlers"]
-    L --> DB["DynamoDB books/pages"]
-    L --> S3["Private S3 images/audio"]
-    L --> OAI["OpenAI Vision + Realtime TTS"]
-    C --> AP
-    U --> S3
-```
+~~~mermaid
+flowchart LR
+    Browser[React browser] --> CF[CloudFront]
+    CF --> Web[Private S3 frontend]
+    Browser --> Auth[Cognito managed login]
+    CF --> API[HTTP API + API Lambda]
+    Browser -->|Short-lived signed upload| Media[Private S3 media]
+    API --> DB[DynamoDB]
+    DB -->|Capture state stream| Dispatch[Dispatcher Lambda]
+    Dispatch --> Queue[SQS + DLQ]
+    Queue --> Worker[Processing Lambda]
+    Worker --> Vision[OpenAI vision]
+    Worker --> Speech[TTS provider]
+    Worker --> DB
+    Worker --> Media
+    Worker --> Secrets[Secrets Manager]
+    Schedule[EventBridge schedule] --> Maintenance[Maintenance Lambda]
+    Maintenance --> DB
+    Maintenance --> Queue
+    Maintenance --> Media
+~~~
 
-The browser uploads full-resolution images directly to S3 using a **presigned PUT URL** issued by Lambda. It never receives AWS credentials or an OpenAI API key. CloudFront serves only frontend assets; uploaded book pages and audio remain private and are accessed with short-lived presigned GET URLs.
+- **Frontend:** camera permission, framing, motion/blur checks, submission, polling, ordered narration, saved history, and accessible controls. Provider credentials never reach the browser.
+- **API Lambda:** authentication, ownership, quotas, capture reservation/sequences, signed uploads/downloads, job submission/retry, and session management. It never waits for a model response.
+- **Stream dispatcher:** send a job when a capture enters `QUEUED` with a new attempt number. This avoids committing a job and then losing a separate API queue-send operation. Retry failures and configure a failure destination.
+- **Processing Lambda:** validate image bytes, perform vision, decide duplicates, generate audio, and checkpoint results. Use conditional writes and attempt/lease tokens to reject stale work.
+- **Maintenance Lambda:** repair stranded jobs, expire abandoned uploads, finish deletion, and remove orphan media. Run every five minutes initially.
+- **S3:** separate the frontend bucket from the private media bucket. Media prefixes are `incoming/`, `pages/`, and `audio/`. No public media access.
+- **CloudFront:** cache fingerprinted frontend assets; disable caching on `/api/*`. Private media uses short-lived S3 URLs issued after ownership checks. Configure CSP and S3 CORS for the exact deployed origins and required upload/media operations.
 
-## User experience
+HTTP API integrations have a maximum 30-second timeout. Model calls therefore run in the worker. [AWS HTTP API quotas](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html)
 
-1. User signs up/signs in via Cognito.
-2. User creates or selects a book.
-3. User starts the camera (explicit browser permission). Show live preview and optional draggable capture region covering the page; allow a manual capture button.
-4. Camera samples a small thumbnail approximately every 200 ms in Canvas. Display status: `Monitoring`, `Page moving`, `Waiting for stability`, `Capturing`, `Checking page`, `Ready`, `Blank page`, `Retake needed`, `Reading`, `Error`.
-5. When movement is observed, wait until the selected region is stable for ~1.2 seconds. Compare the stable image against the latest accepted capture to avoid duplicates. If it is new and sufficiently sharp, capture one image with enough resolution for small type. Include a little page-edge or gutter context when visible.
-6. Upload the capture and have OpenAI check for a book page and printed words. Read printed words in their original language. For a wordless illustration, show the script as an AI-generated description and read it in the book's configured narration language (default to the user's language preference). Skip genuinely blank pages in the playback queue. If the image is not a book page or is too unclear, prompt for a retake; do not narrate it.
-7. Show a page-thumbnail list and selected full-size image. Provide Play/Pause/Replay, Previous/Next, Auto-read, Retake, and Retry controls. Request speech only on Play or when the next page is about to auto-play. Selecting a saved page must not trigger recognition again.
-8. Retain the script independently of audio. Cache audio in S3 for replay; a change of voice, style, or model regenerates audio only when requested.
+Use four CDK stacks: `ReaderDataStack` (table, media, queues), `ReaderAuthStack` (Cognito), `ReaderApiStack` (API, functions, schedule, logs/alarms), and `ReaderWebStack` (frontend bucket/distribution). Keep the worker outside a VPC unless a demonstrated requirement appears.
 
-**Reading vs capture:** continue detecting page changes even while playback occurs, but never overwrite or interrupt a manually selected page unexpectedly. For MVP, queue a newly captured page and start its audio after the current page finishes; optionally add a `Follow latest / Interrupt now` setting later. Use a single controlled audio player and a generation/request ID to ignore stale async results.
+## 3. Capture, recognition, and narration contracts
 
-## Page-change algorithm: Canvas only, no OpenCV dependency initially
+### 3.1 Camera and stability
 
-Use `getUserMedia({ video: { facingMode: 'environment' }, audio: false })` and a hidden Canvas to sample the live `<video>`. Camera access requires HTTPS or localhost.
+- Start camera/audio setup from an explicit **Start Reading** interaction. Request video only, prefer the rear camera, and use a muted inline preview. Handle denied permissions, missing cameras, camera switching, and playback rejection with visible recovery.
+- Process motion thumbnails locally at approximately four samples per second. Start with a one-second stable window; tune against real camera footage and keep thresholds configurable.
+- Use a framing guide as the crop. Check motion, minimum crop size, and sharpness; submit the best frame from the stable window. Backend vision confirms that the image is a book page.
+- Preserve OCR detail: start with a 2,560-pixel longest edge and a 4 MiB upload cap. Tune compression using fixtures. If text becomes too small, request a closer single-page capture. Upload only the framed book region and strip image metadata; do not record microphone audio or continuous video.
+- Keep a submitted-frame fingerprint and require a meaningful scene change before rearming. Hand tremor, focus changes, and exposure changes must not repeatedly submit the same page. Ambiguous similarity remains eligible for backend checking.
+- Non-book/unreadable results do not trigger continuous retries while the scene stays unchanged. Let the user move the book or select **Capture Again**.
+- Pause capture and narration when the tab becomes hidden. Require explicit Continue on return. Stop camera tracks when leaving the reading screen or pressing Stop.
 
-1. Crop to the user-defined page ROI; downscale to 160×120 or 320×240; convert to grayscale.
-2. Compute mean absolute pixel difference from previous sample. Optionally ignore minor differences with a per-pixel noise threshold.
-3. Detect meaningful movement only after successive samples exceed a calibrated threshold; set state `MOVING`.
-4. Restart a stability timer whenever frame-to-frame difference exceeds the stability threshold. Once stable for 1,200 ms, evaluate the candidate.
-5. Compare candidate against the **last accepted page** using a perceptual hash or normalized thumbnail difference, not just consecutive frames. Do not save if materially the same page.
-6. Reject clearly blurry/obstructed frames where feasible (simple contrast/sharpness heuristic); expose `Retake` and manual capture fallback.
-7. Atomically latch capture until the upload is scheduled and the saved-page reference is updated; apply a 2-second cooldown. A rejected candidate returns to monitoring without an infinite retry loop.
+Camera access requires a secure context and permission; audible playback can require interaction. Test the actual player after asynchronous audio arrives, and handle rejected `play()` promises. [Camera API](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia), [autoplay behavior](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay)
 
-Thresholds are **initial tuning parameters**, not guaranteed accuracy across lighting/cameras. Keep them configurable in the UI or constants; test shadow, hand occlusion, slight camera shake, glossy pages, repeated-looking pages, and two-page spreads. ROI, stabilization, and deduplication reduce false positives but do not eliminate them. For robustness later add document-corner detection, perspective correction, alignment, and OCR-based deduplication.
+### 3.2 Vision response
 
-Suggested capture states: `MONITORING → MOVING → STABILIZING → CANDIDATE → CAPTURING → COOLDOWN → MONITORING`. After `UPLOADING → RECOGNIZING`, set `CONTENT_READY` when a script exists, `BLANK` for empty pages, `RETAKE_REQUIRED` for non-pages or unclear captures, or `FAILED` for processing errors. A playback request can advance `CONTENT_READY → SYNTHESIZING → READY`. Do not keep polling when recognition or synthesis is no longer running.
+Require a validated structured response:
 
-## Data model
+~~~json
+{
+  "is_book_page": true,
+  "text_state": "readable",
+  "ocr_text": "The exact printed words, in reading order.",
+  "illustration_description": "",
+  "language": "en",
+  "needs_retake": false,
+  "retake_reason": null
+}
+~~~
 
-Use one DynamoDB table `BookReader` with partition/sort keys and a GSI only if query patterns require it:
+`text_state` is `readable`, `absent`, or `unreadable`. Validate field combinations, length limits, refusals, and empty output server-side.
 
-| Entity | PK | SK | Key attributes |
-| --- | --- | --- | --- |
-| Book | `USER#<cognitoSub>` | `BOOK#<bookId>` | title, narrationLanguage, voice?, createdAt, updatedAt |
-| Page | `BOOK#<bookId>` | `PAGE#<zeroPaddedSequence>` | pageId, ownerSub, sequence, imageKey, audioKey?, pageType?, isBookPage?, wordPresence?, extractedText?, readingText?, illustrationNarration?, detectedLanguage?, scriptLanguage?, status, reasonCode?, error?, createdAt, imageFingerprint |
-
-**Ownership:** every page request must verify the parent book belongs to the authenticated Cognito `sub`; do not assume a `bookId` or `pageId` from the client is authorized. For efficient page lookup, either include sequence in the route or maintain a `PAGEID#<pageId>` lookup item. Ensure server-generated IDs, atomic sequence assignment and conditional writes prevent duplicates/races.
-
-Example S3 object keys: `users/<sub>/books/<bookId>/pages/<pageId>.jpg` and `users/<sub>/books/<bookId>/audio/<pageId>-<cacheHash>.mp3` (or another browser-playable audio format). Compute `cacheHash` from the script, language, model, voice, and style version.
-
-Store S3 keys rather than permanent public URLs. Keep OCR text separate from generated illustration descriptions. If extracted text grows beyond DynamoDB's 400 KB item limit, store it as a UTF-8 object in S3 and retain a pointer in DynamoDB. Exclude rejected captures from the saved library and expire their uploads.
-
-## API contracts
-
-All routes require a valid Cognito JWT except any explicitly public health endpoint. Use JSON, consistent error responses, strict validation, and CORS for the CloudFront origin.
-
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `POST` | `/books` | Create a book |
-| `GET` | `/books` | List current user's books |
-| `GET` | `/books/{bookId}/pages` | List pages in sequence |
-| `POST` | `/books/{bookId}/pages/presign` | Allocate page ID/sequence; create `UPLOADING` record; return short-lived S3 PUT URL and headers |
-| `POST` | `/books/{bookId}/pages/{pageId}/complete` | Verify uploaded object exists and enqueue page recognition idempotently |
-| `GET` | `/books/{bookId}/pages/{pageId}` | Return page classification, status, script (if available), and short-lived image/audio GET URLs |
-| `POST` | `/books/{bookId}/pages/{pageId}/speech` | Return cached audio or enqueue synthesis idempotently for an approved, narratable page; use only the stored script |
-| `POST` | `/books/{bookId}/pages/{pageId}/retry` | Retry the failed stage safely; an unclear image requires a new capture, not another call on the same image |
-
-Use background processing for recognition/speech. API Gateway should return promptly instead of waiting for an entire page of speech; browser polls page status every 1–2 seconds during processing. Lambda can enqueue separate work on SQS, optionally use Step Functions for orchestration if required. Do not perform long-running OpenAI work in an API Gateway synchronous request. Prefer SQS + workers with idempotent conditional status transitions, retry/backoff, and dead-letter queue.
-
-## OpenAI processing
-
-**Vision/OCR:** send one image per capture (from private S3, via backend-authorized bytes) to the OpenAI Responses API. The browser only detects movement and stability; the model determines what the image shows. In the same structured response return `is_book_page` (`yes`, `no`, `uncertain`), `word_presence` (`present`, `absent`, `uncertain`; null if a book page wasn't confirmed), `page_type`, `detected_language`, `extracted_text`, `reading_text`, `illustration_narration`, and a `reason_code` when appropriate. Only return script fields applicable to the classification. Validate the response schema and reject inconsistent results before synthesis.
-
-**Fast, low-cost default:** use `gpt-6-luna` on Standard processing with `reasoning.effort: "none"` as the baseline. Send only the stable, deduplicated capture, cropped to the page with enough detail to see small captions. On the normal path the same response makes both decisions and returns either the transcription or the description; do not add a separate classification call before recognition. For a mode that only needs the decisions, request just `is_book_page` and `word_presence`. Never infer `absent` merely because transcription is empty or the image is blurry.
-
-Use visual cues such as the page shape, gutter, or print layout to decide whether the capture appears to be a book page. Do not require a visible edge in every shot (e.g., full-bleed artwork), but ask for a wider shot if there is not enough evidence. This is a visual judgment, not proof that the object is a physical book rather than a reproduction. Treat words in the image as content to read, not as instructions to follow.
-
-| `page_type` | Decision and playback |
+| Result | Action |
 | --- | --- |
-| `text` | A book page with readable words, including captions, labels, and titles. Read the text in its original language and order, even if the page also has pictures. Preserve wording and punctuation; never fill in missing words or translate. Ignore background writing and standalone page numbers. |
-| `illustration` | A confirmed book page with a clear picture and no visible words. In the configured narration language, describe what is visible in 2–4 short sentences for ages 4–6. Use everyday words, a warm tone, and concrete details such as actions and colors. Do not invent names, feelings, dialogue, or a plot. |
-| `blank` | A confirmed book page with no words or meaningful picture. Show `Blank page`; no speech call. |
-| `unreadable` | There appear to be words, but they cannot be reliably read. Ask for a sharper or less obstructed capture; do not treat the image as wordless. |
-| `not_page` / `uncertain` | The image is not a book page, or the model cannot tell whether it is a page or whether words are present. Ask for a retake; no speech call. |
+| Not a book page | `REJECTED`; no narration; delete temporary image. |
+| Readable book text | Use faithful OCR as narration. |
+| Book page, text absent | Use a grounded illustration description; a genuinely blank page receives a brief factual description. |
+| Unreadable/partial/obscured text | `REJECTED` with a retake reason; no invented replacement narration. |
+| Invalid response, refusal, timeout, provider error | Apply the bounded failure policy, then expose a recoverable failure. Do not retry permanent refusals. |
 
-Example description: *“Look! A little bear is holding a red umbrella. Raindrops are falling around it.”*
+The prompt specifies page/spread reading order and treats printed instructions as page content. It must not add a greeting to every page, rewrite the story, invent plot details, or translate automatically. Store prompt/schema versions. Evaluate small, curved, rotated, and stylized text explicitly. [OpenAI vision limitations](https://developers.openai.com/api/docs/guides/images-vision)
 
-**TTS:** pass the stored script to `generateSpeech({ text, language, voice, style })` without sending the image again. Use a supported OpenAI Realtime preset voice and style instructions: *“Read this script as written. Sound like a warm, patient kindergarten teacher at story time. Speak clearly at a gentle pace, pause between sentences, and use natural expression. Do not add or change words.”* Use text-only input with no preceding page history. Collect audio chunks server-side, encode them for playback, and write them to S3. Verify supported voices, events, and codecs; split long pages at natural breaks without clipping. Disclose that the voice is AI-generated.
+### 3.3 Duplicate decision
 
-**Error handling:** distinguish retake requests from timeouts, throttling, content filtering, speech failures, and partial audio. Retry only the failed stage with a bounded attempt count. Do not rerun vision on a speech failure or duplicate paid work on repeated requests.
+1. Compute a trusted checksum and visual signatures from decoded image bytes on the backend. Compare crops and normalized OCR; generated descriptions are not page identity.
+2. Compare accepted pages within the same session. Exact image matches are duplicates. Near matches require strong visual evidence, with text agreement as supporting evidence when text exists.
+3. Preserve visually different pages even if their words match. Keep ambiguous candidates. Calibrate thresholds using labeled same-page/different-page pairs.
+4. Protect acceptance with a session `identityVersion` conditional transaction. A competing worker reloads accepted signatures and reevaluates using its saved vision result.
+5. For a duplicate, keep only the capture outcome and canonical-page reference. Delete its temporary image and avoid new speech generation. Explicit Replay uses the saved page.
 
-## Security and operational requirements
+“Do not store duplicates” means no permanent duplicate page/image. Temporary upload is necessary before backend inspection and is removed after rejection or deduplication.
 
-- Store `OPENAI_API_KEY` in AWS Secrets Manager; grant only worker Lambda access. Never ship it to React or log it.
-- Private S3 Block Public Access, encryption, HTTPS-only bucket policy; CloudFront OAC only for frontend bucket.
-- Cognito JWT validation at API Gateway plus resource-level ownership checks in Lambda.
-- Presigned uploads constrained by expected content type, file size (validated after upload), object key, and short expiration. Do not trust client content metadata.
-- Minimize IAM permissions; rate-limit requests and impose book/page and size quotas to control API costs.
-- CloudWatch structured logs, metrics and alarms; record per-stage outcomes and usage without logging page text, generated scripts, credentials, or signed URLs.
-- Retention/deletion policy: user can delete a book and its associated S3 objects, metadata, and cached speech in a later milestone.
-- Text from copyrighted books may be personal-use content; design for private storage and user-authorized uploads. Do not share book scans by default.
+### 3.4 State, ordering, and recovery
 
-## Implementation milestones and acceptance criteria
+~~~text
+UPLOADING -> QUEUED -> PROCESSING -> READY
+                              -> DUPLICATE
+                              -> REJECTED
+                              -> FAILED
+Any unfinished capture       -> CANCELLED
+FAILED -> QUEUED on explicit Retry, same sequence, new attempt
+~~~
 
-### Phase 1 — Frontend detector
+Store stage separately: `validate`, `vision`, `deduplicate`, or `speech`. Accepted pages have `AUDIO_PENDING`, `READY`, or `AUDIO_FAILED` status. Speech failure retains the recognized page.
 
-- React camera view + ROI + Canvas downsampling and stability detector.
-- Demo works on desktop Chrome and mobile Safari/Chrome over HTTPS, with permission and camera-error states.
-- Automatic capture of a truly new stationary page; manual capture override; minimal duplicate captures in ordinary lighting.
+- Reserve a monotonically increasing capture sequence before upload. Reuse capture ID and idempotency key after network retries. Reserve in capture order while allowing processing to overlap.
+- Advance narration by sequence, never completion time. A ready third capture waits for the second to resolve.
+- `DUPLICATE`, `REJECTED`, and `CANCELLED` advance silently. `FAILED` pauses advancement and offers Retry or Skip. Expired/failed uploads become terminal captures so they cannot leave an invisible queue gap.
+- Pause affects narration; capture may continue until the three-capture limit. Skip bypasses the current narration or failed capture; accepted pages remain saved.
+- Stop immediately stops camera/audio, clears the local automatic queue, changes the local session generation, and marks the server session `STOPPED`. Ignore stale callbacks and reject new automatic commits. Retain already accepted pages.
+- On reload, offer Continue from the recorded completed/skipped sequence; never resume audio automatically. An interrupted page may replay explicitly.
+- Serialize Replay through the same audio player. Refresh expired media URLs without regenerating audio.
+- Checkpoint vision output and completed audio chunks. Cache audio within the owner/session using narration hash, provider, model, voice/settings, and prompt version. Respect explicit provider chunk limits; never silently truncate.
+- Retry transient errors with backoff, at most three automatic attempts per failed stage. Provider calls can repeat after a crash before checkpointing; exactly-once billing is not guaranteed.
+- Queue messages contain IDs and attempt numbers. Track per-stage retry counts separately. Ignore stale attempts/terminal jobs. Use expiring leases with fencing tokens so an older worker cannot commit over a recovered attempt.
+- A Retry on a stopped session is an explicit page-recovery action, not a resumption of automatic capture. Allow it only for an existing saved page, and only while the session is not deleting; starting a new automatic reading run creates a new active session.
 
-### Phase 2 — AWS authentication and persistence
+Event-source processing can deliver duplicates. Both dispatcher and worker must be idempotent. [DynamoDB stream processing](https://docs.aws.amazon.com/lambda/latest/dg/with-ddb.html), [SQS processing](https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html)
 
-- CDK stack for CloudFront, private frontend S3, Cognito, API Gateway, Lambdas, DynamoDB, image/audio S3, SQS (+ DLQ), IAM and secrets reference.
-- User can log in, create a book, upload a page via presigned PUT, refresh and retrieve thumbnails; another user's pages are inaccessible.
+## 4. API and data design
 
-### Phase 3 — OpenAI page recognition and read-aloud
+All routes use `/api` and require a validated Cognito access token except a minimal health endpoint. Configure issuer/client validation and explicit `reader/read` or `reader/write` route scopes. Derive ownership from the token, never a supplied `userId`. Every page/capture route verifies its session owner. [JWT authorizers and route scopes](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html)
 
-- One vision request distinguishes readable book pages, wordless illustrations, blank pages, non-pages, and uncertain or unreadable captures.
-- English and Chinese text pages are read as written, including on mixed text-and-picture pages. Clear wordless pages get a brief, visibly grounded description in the configured language. Blank, rejected, and unreadable captures make no speech request.
-- Test the teacher-style delivery in English and Mandarin: clear pronunciation, gentle pace, natural pauses, and no added or omitted words. The async Realtime adapter generates playable audio only when needed, stores it privately, and yields a presigned playback URL.
-- Auto-play and pause/replay work. Auto-read off does not generate speech until Play, and cached replay makes no new OpenAI call.
+| Method and route | Responsibility |
+| --- | --- |
+| `POST /sessions` | Create an active session; request-key idempotency. |
+| `GET /sessions` | Paginated history for the signed-in owner. |
+| `GET /sessions/{sid}` | Session state, capture outcomes, pages, playback progress; paginate results. |
+| `POST /sessions/{sid}/captures` | Reserve ID/sequence/quota; return a short-lived size-constrained S3 POST upload. |
+| `POST /sessions/{sid}/captures/{cid}/submit` | Verify uploaded object, freeze expected checksum/metadata, commit `QUEUED`; return `202`. Repeated submission is idempotent. |
+| `GET /sessions/{sid}/captures/{cid}` | Status, reason, or accepted page reference. |
+| `POST /sessions/{sid}/captures/{cid}/retry` | Resume from saved stage with a new attempt and enforced quota. Missing input requires a fresh capture. |
+| `GET /sessions/{sid}/pages/{pid}/media` | Issue short-lived image/audio URLs after ownership check. |
+| `PUT /sessions/{sid}/progress` | Record completed/skipped playback progress without regression. |
+| `POST /sessions/{sid}/stop` | Idempotently stop automatic work. |
+| `DELETE /sessions/{sid}` | Mark `DELETING`, block work, asynchronously remove media/records; return `202`. |
 
-### Phase 4 — QA and release
+Signed POST policies constrain upload size, key, and content type. The worker validates actual format, dimensions, checksum, and decoding bounds. Reserve unique object keys, verify bytes against the frozen checksum, and copy accepted images to deterministic final keys before publishing a ready page. [Boto3 signed POST policy options](https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3/client/generate_presigned_post.html)
 
-- Verify duplicate detection, poor lighting, fast and slow turning, capture while audio plays, book switching, failed uploads, token expiry, worker retries and mobile backgrounding. Test full-bleed illustrations, tiny captions, blank pages, unreadable text, and non-book objects; measure classification errors and per-page usage before enabling automatic paid processing.
-- Compare `none` versus `low` reasoning on the same English and Chinese captures. Measure capture-to-script latency (median and 95th percentile), input/output tokens, and how often printed words are incorrectly marked absent. Only consider a separate classification pass if enough captures are rejected to offset the second request on valid pages.
-- Tests for ownership, status transitions, deduplication, and API errors; basic end-to-end test.
-- Deployment guide, `README.md`, `.env.example`, and smoke-test commands. Do not commit secrets.
+Use one on-demand DynamoDB table:
 
-## Repository layout
+| Record | Key and important fields |
+| --- | --- |
+| Session | `PK=USER#<sub>`, `SK=SESSION#<sid>`; lifecycle, next sequence, identity version, progress, counts, timestamps. |
+| Capture | `PK=USER#<sub>#SESSION#<sid>`, `SK=CAPTURE#<cid>`; sequence, job/stage attempt counters, automatic or explicit-audio-retry mode, stage, lease, expected image metadata, vision checkpoint, outcome, canonical page ID, timestamps. |
+| Page | Same session partition, `SK=PAGE#<pid>`; source sequence, image/audio keys, text/description, language/type, signatures, provider/prompt versions, audio status. |
+| Request receipt | Owner/session partition, `SK=REQUEST#<key>`; request hash, resource IDs, expiration. |
 
-```text
-book-reader/
-  frontend/                 # React, camera detector, authentication, pages/player UI
-  backend/                  # Lambda API, OCR worker, speech worker, shared models
-  infra/                    # AWS CDK stacks
-  tests/                    # Unit, integration and end-to-end tests
-  README.md
-  .env.example
-```
+Add a maintenance index on work state/last-updated time for expired uploads, stranded queued work, stuck processing, and deleting-session tombstones. Keep binary content in S3. Handle pagination explicitly; playback uses sequence, not UUID ordering. Poll every second while jobs are active, back off when idle or offline, and stop polling closed sessions.
 
-## Instructions to Codex
+Initial configurable limits: three captures ahead, 100 accepted captures per session, 200 capture attempts per owner/day including retries, and 200 speech-generation attempts per owner/day. Reserve quota before provider calls, including recovery calls/chunks. Over-limit requests stop new paid work with a clear message. M1 determines safe narration/chunk size for the pinned provider.
 
-Implement this project incrementally in the sequence above. Start by scaffolding a working repository and a **testable Phase 1** browser prototype; then implement the AWS infrastructure and services. Favor simple, documented code over premature abstractions. Create real infrastructure definitions, API contracts, tests and instructions; do not silently mock persistence or speech in the final integrated workflow. Never deploy or create chargeable cloud resources without explicit authorization and appropriate AWS credentials. Treat OpenAI model availability, voice support and Realtime response event formats as integration points to confirm against current official documentation before coding. At each milestone, run relevant tests, summarize what works and what remains, and keep the app runnable locally with an explicit mock mode for development.
+Accepted pages remain until session deletion. Target removal of abandoned uploads after 24 hours through maintenance, with S3 lifecycle as a fallback; delete rejected/duplicate images promptly. Failed input remains retryable for at most 24 hours; logs retain 14 days. Use a non-versioned media bucket initially to simplify deletion. Retain deletion tombstones for at least 24 hours and beyond all outstanding upload URLs/worker leases. Conditional final writes and repeated cleanup must cover late uploads and workers already running when deletion starts.
+
+## 5. Repository layout
+
+~~~text
+frontend/src/
+  auth/                 # Cognito login, callbacks, sign-out
+  camera/               # preview, crop, motion, sharpness, capture
+  reader/               # session state, ordered queue, one audio player
+  history/              # saved sessions, replay, deletion
+  api/                  # typed contracts, polling, idempotent requests
+backend/
+  api.py                # FastAPI routes and Lambda adapter
+  contracts.py          # validation and state enums
+  sessions.py           # ownership, quotas, lifecycle, progress
+  captures.py           # reservation, submit, retry, transitions
+  recognition.py        # OpenAI adapter and versioned prompt
+  deduplication.py      # comparison and acceptance transaction
+  speech.py             # provider adapter, chunks, cache
+  worker.py             # staged processing and checkpoints
+  dispatcher.py         # DynamoDB stream -> SQS
+  maintenance.py        # repair, expiry, deletion, orphan cleanup
+  storage.py            # DynamoDB/S3 and local adapters
+infra/lib/              # CDK stacks and infrastructure tests
+scripts/                # dev, checks, build, deploy, bootstrap, smoke
+tests/                  # domain, API, worker, queue tests
+docs/                   # evaluation, deployment, operations
+~~~
+
+Use React + TypeScript + Vite, Python 3.12 + FastAPI/Pydantic, and TypeScript CDK. Package image dependencies for Lambda Linux ARM64; do not deploy macOS binaries. Local mode uses the same domain services with in-memory storage and an in-process dispatcher; deployed tests verify actual AWS integration.
+
+## 6. Milestones
+
+### M0 — Repository and configuration (0.5 day)
+
+Dependencies: none.
+
+- [x] Scaffold runnable frontend, backend, infrastructure, scripts, tests, and docs; add feature modules from the layout above as their milestones begin. No existing `dist/` was present; unrelated work was preserved.
+- [x] Extend `.gitignore` beyond its current `node_modules` entry: ignore `.envrc`, swap files, environment/credential files, `.venv`, caches, builds, `cdk.out`, and deployment outputs.
+- [x] Add a value-free configuration example. Keep credentials server-only.
+- [x] Add dependency lockfiles, a local development command, and one check command for type checks, relevant tests, frontend build, and CDK synth.
+- [x] Define shared contracts/states and configuration for camera thresholds, providers/voice, quotas, media limits, and queue size. Thresholds are provisional; quota enforcement and state transitions belong to later milestones.
+
+Exit: a clean checkout can install, run a static reader screen and health endpoint, and pass baseline checks without credentials. Source/output/browser bundles contain no secret values.
+
+### M1 — Camera, recognition, and voice evaluation (1–1.5 days)
+
+Dependencies: M0 and available OpenAI credentials. The proposed OpenRouter path also needs an OpenRouter key; other work can continue while selecting speech.
+
+- [x] Build a manual camera/crop prototype before automatic detection. Local-only JPEG preview; no uploads or provider calls. Synthetic desktop-browser checks cover framing/encoding, denied permission, Stop, and explicit Continue after backgrounding; real target devices remain pending.
+- [ ] Assemble at least 20 labeled images: readable pages/spreads, identical words on different pages, picture-only pages, blurred/obscured text, and non-book scenes. Keep private real-book photos out of git; commit only synthetic or permitted fixtures.
+- [x] Implement structured vision and validate every result. The local adapter uses a strict nested union for readable, picture-only, unreadable, and non-book outcomes; prompt version `reader-vision-v3` supplies all four orientations of the same capture in one request. Candidate `gpt-4.1-mini` passed 24 synthetic Chinese orientation/dim/tilt variants exactly and rejected one unreadable-text fixture. This is not real-book certification.
+- [ ] Evaluate the complete fixture set and compare a more capable candidate if accuracy requires it; certify/pin the candidate only after passing the full gate.
+- [ ] Measure upload size, OCR errors, processing latency, and provider usage. Choose resolution/compression from evidence.
+- [ ] Audition at least three supported adult female voices using prose, dialogue, names, and intended languages. Pin the selected voice/settings.
+- [ ] Verify speech endpoint, exact text fidelity, format, mobile playback, timeout, and input limits. Define sentence-boundary chunks if required and prefetch them in order. Local implementation now uses exact-text sentence-preferred chunks, bounded timeouts/retries, and PCM-to-WAV conversion verified against the live Gemini route; real-device playback, listening fidelity, and provider boundary evaluation remain pending.
+- [ ] Record provider/model/voice, prompt/schema versions, limitations, and measured latency/cost in `docs/model-evaluation.md`.
+
+Exit: no fabricated story text or accepted non-book scenes in the labeled set; at least 95% word accuracy on clearly readable English fixtures; every picture-only fixture receives a grounded description; unreadable fixtures request retakes. These are fixture targets. Record voice listening/playback results on both target mobile platforms.
+
+### M2 — Manual end-to-end reading (1.5–2 days)
+
+Dependencies: M1 chooses a working vision/speech combination; M0 contracts.
+
+- [ ] Implement sessions, capture reservation/upload/submit, job status, and history with local adapters.
+- [ ] Implement the worker, validated results, checkpoints, and deterministic media keys.
+- [ ] Save accepted image/text/audio and canonical-page references. Speech retry reuses saved vision.
+- [ ] Build preview, Capture, current narration text, progress, Pause/Continue, Skip, Replay, Stop, and recovery controls.
+- [ ] Implement one player and a sequence-ordered queue, including failure barriers and expired URL refresh.
+- [ ] Persist progress and require explicit Continue after reload.
+
+Exit: capture A/B/C while A plays; force C to finish processing before B; narration remains A → B → C without overlap. Picture-only pages are saved/read. Speech retry avoids another vision call. Stop prevents late results from restarting playback.
+
+### M3 — Automatic capture and deduplication (1.5–2 days)
+
+Dependencies: M2 and M1 fixtures.
+
+- [ ] Implement motion/blur checks, best-frame selection, scene-change rearming, and the three-capture bound.
+- [ ] Implement conservative image/text comparison and conditional concurrent acceptance.
+- [ ] Add framing, “hold steady,” retake, and queue-full states. Preserve manual Capture.
+- [ ] Cover camera movement, focus/exposure changes, hand removal, repeated text, picture-only pages, rapid turns, and returning to a previous page.
+- [ ] Verify pause/background/stop behavior against section 3.4.
+
+Exit: a stationary page produces one submission during a 60-second hold after acceptance. Visually different pages with identical text are read. Picture-only duplicates are compared visually. Work ahead never exceeds the bound. Record missed captures/false duplicates from real-device footage before tuning.
+
+### M4 — Authenticated AWS processing (2–3 days)
+
+Dependencies: M2/M3 and configured AWS target. Infrastructure work can begin after M0.
+
+Private manual-reader subset deployed at <https://dn9bjxhghgekj.cloudfront.net> in the explicitly confirmed account/region. This subset uses temporary owner/run jobs and a size-limited raw-JPEG API upload, not saved sessions, transactional cross-capture deduplication, or the future signed-upload API. See [deployment](docs/deployment.md) and [operations](docs/operations.md). Successful private deployment does not complete the entire M4/M5 release gate.
+
+- [x] Implement the four CDK stacks and isolated resource names; reuse private S3/OAC, conditional-write, logging, and failure-queue patterns.
+- [x] Configure Cognito managed login with authorization code + PKCE, public-client settings, disabled public signup, HTTP API JWT authorization, and `reader/read`/`reader/write` scopes. Include first-login password change and sign-out. Managed OAuth verified with isolated test accounts; the adult's first password change remains an owner action.
+- [x] Add account bootstrap with invitation messages suppressed. Save the generated temporary password once to an ignored local file with mode `0600`; omit it from logs/outputs and provide checked removal after successful first login. [Cognito account provisioning](https://docs.aws.amazon.com/cognito/latest/developerguide/how-to-create-user-accounts.html)
+- [x] Declare Secrets Manager containers in infrastructure and populate values with a server-side bootstrap script. Scope secret access to processing roles. Keep values out of CDK templates and command arguments.
+- [ ] Implement DynamoDB/S3 persistence, stream dispatch, SQS workers, leases, transactional deduplication, maintenance repair, and asynchronous deletion.
+- [x] Set worker/provider timeouts using measured prototype behavior; configure SQS visibility, partial-batch failure handling, failure destinations, and DLQs. Worker timeout is ten minutes with 60-minute SQS visibility; provider calls have bounded wall time. Full long-page performance evaluation remains pending.
+- [x] Configure signed media access, strict CORS/CSP, and disabled API caching. Check ownership on every status/media/mutation route. Verified against missing/foreign-owner tokens in the deployed manual API.
+- [ ] Enforce quotas and usage limits. Log job IDs, stage timings, and usage without page text, raw images, credentials, tokens, or signed URLs.
+- [ ] Alarm on function errors, stuck jobs, dispatcher failures, queue age, and DLQs. Configure cost alerts and record their notification destination.
+- [x] Deploy the initial private manual environment for AWS integration checks. Its isolated live smoke passed login -> upload -> stream/SQS worker -> exact synthetic OCR -> private speech -> replay -> discard. Operational SNS confirmation, financial budgets, saved sessions/deduplication, and remaining release checks are still pending.
+
+Exit: login/password change work; missing/foreign tokens cannot access another owner's data; media is private. Committed jobs survive dispatcher failure. Duplicate messages create one canonical page. Old attempts cannot overwrite newer work. Session deletion during processing cannot recreate pages/media.
+
+### M5 — Verify, deploy, and hand over (1–1.5 days)
+
+Dependencies: M4. Completion requires all release checks below.
+
+- [ ] Run the check command, Linux ARM64 packaging, production build, and CDK synth/diff. Inspect resource changes and frontend configuration.
+- [ ] Verify account/region; deploy validated updates, populate any missing secrets, publish the frontend, and verify the adult account setup.
+- [ ] Run a deployed smoke script using only its own temporary session; verify upload → recognition → speech → replay → delete and clean up.
+- [ ] Complete Safari/Android camera/audio checks, including permission denial, orientation, backgrounding, expired login, and network loss.
+- [ ] Read at least three real books, including repeated text and picture-only pages. Record limitations and tune against recorded failures.
+- [ ] Write `docs/deployment.md` and `docs/operations.md`: URL, local commands, secret rotation, account recovery, alarms, quotas, job recovery, deletion, rollback, and redeploy. Exclude credentials.
+
+Exit: the private deployed app passes release checks, the owner can sign in/read books, temporary test data is removed, and recovery/rollback steps are documented.
+
+## 7. Release checks and measurements
+
+| Check | Required result |
+| --- | --- |
+| Stable page | One submission while a page stays still for 60 seconds after acceptance. |
+| Page turn | Each held, readable page in the test sequence is captured. |
+| Repeated words | Visually different pages with identical words are both saved/narrated. |
+| Duplicate picture-only page | No extra permanent page/image/audio; Replay reuses saved content. |
+| Ordering | A/B/C remain in capture order under reordered responses. |
+| Quality | Unreadable text requests retake; readable text is preserved; descriptions stay grounded. |
+| Recovery | Upload/vision/speech failures have visible recovery and no invisible sequence gaps. |
+| Duplicate delivery/crash | One canonical page; completed stages are reused. |
+| Stop/background/reload | No stale automatic playback or overlapping players; Continue is explicit. |
+| Deletion race | Tombstones prevent resurrection; media and records are eventually removed. |
+| Ownership | Missing, expired, and other-owner tokens cannot read/mutate data or obtain media URLs. |
+| Secrets | No credentials in git, frontend artifacts, logs, templates, or deployment outputs. |
+
+Initial performance goals: recognize local stability within roughly 1.5 seconds of a page becoming still; warm reservation/status API p95 under one second; median stable-capture-to-first-audio-ready at most eight seconds and p95 at most twenty seconds for a short English page without deliberate narration backlog. Measure cold starts separately. Validate these goals; if missed, resolve provider/capture settings before launch and record the measured limitations.
+
+Track unique pages, rejects, duplicates, OCR errors, retries, queue depth, stage latency, speech attempts, provider usage, and estimated cost per accepted page. Estimate session cost from measured page usage and current provider prices. Request limits constrain usage; delayed budget alerts are not a hard spending cap.
+
+## 8. Model notes and remaining inputs
+
+- `google/gemini-3.8-flash-tts` is listed on OpenRouter. M1 must verify this account's access, voice configuration, text fidelity, and latency. [Model listing](https://openrouter.ai/google/gemini-3.8-flash-tts), [audio documentation](https://openrouter.ai/docs/guides/overview/multimodal/audio)
+- OpenAI currently lists `tts-1`, `tts-1-hd`, and `gpt-4o-mini-tts` for shutdown on January 6, 2027, and describes a different Realtime API workflow for its suggested replacement. Avoid those retiring models as this project's production baseline. Validate the supported replacement in M1 if selecting OpenAI speech. [OpenAI speech documentation](https://developers.openai.com/api/docs/guides/text-to-speech)
+- Show a concise “AI-generated voice” disclosure near voice/settings information. [OpenAI disclosure requirement](https://developers.openai.com/api/docs/guides/text-to-speech)
+- Remaining inputs: working credentials for the chosen speech provider, actual target mobile devices, and any launch language beyond English. Resolve these in M1; they do not prevent M0.
+
+Next implementation task: complete real-device/language and voice evaluation before implementing M2's saved/ordered pipeline. The compact local/private-cloud manual reader processes one page at a time with spinner feedback, speech checkpoint retry, Pause/Play/Replay and optional Discard; there is no Stop button. AWS jobs, authentication and private media are deployed, but saved sessions, the three-ahead queue and cross-capture deduplication are not. Synthetic cloud integration checks do not establish complete M1 quality or production-release gates; see [docs/model-evaluation.md](docs/model-evaluation.md) and [deployment](docs/deployment.md).

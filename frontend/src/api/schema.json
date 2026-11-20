@@ -1,0 +1,516 @@
+{
+  "$defs": {
+    "AudioState": {
+      "enum": [
+        "AUDIO_PENDING",
+        "READY",
+        "AUDIO_FAILED"
+      ],
+      "title": "AudioState",
+      "type": "string"
+    },
+    "CameraConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "samples_per_second": {
+          "default": 4,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Samples Per Second",
+          "type": "integer"
+        },
+        "stable_window_ms": {
+          "default": 1000,
+          "maximum": 5000,
+          "minimum": 250,
+          "title": "Stable Window Ms",
+          "type": "integer"
+        },
+        "motion_threshold": {
+          "default": 0.025,
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Motion Threshold",
+          "type": "number"
+        },
+        "scene_change_threshold": {
+          "default": 0.12,
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Scene Change Threshold",
+          "type": "number"
+        },
+        "sharpness_threshold": {
+          "default": 100,
+          "exclusiveMinimum": 0,
+          "title": "Sharpness Threshold",
+          "type": "number"
+        },
+        "min_crop_width": {
+          "default": 640,
+          "minimum": 320,
+          "title": "Min Crop Width",
+          "type": "integer"
+        },
+        "min_crop_height": {
+          "default": 480,
+          "minimum": 240,
+          "title": "Min Crop Height",
+          "type": "integer"
+        },
+        "max_longest_edge": {
+          "default": 2560,
+          "maximum": 4096,
+          "minimum": 640,
+          "title": "Max Longest Edge",
+          "type": "integer"
+        },
+        "max_upload_bytes": {
+          "default": 4194304,
+          "maximum": 4194304,
+          "minimum": 65536,
+          "title": "Max Upload Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "samples_per_second",
+        "stable_window_ms",
+        "motion_threshold",
+        "scene_change_threshold",
+        "sharpness_threshold",
+        "min_crop_width",
+        "min_crop_height",
+        "max_longest_edge",
+        "max_upload_bytes"
+      ],
+      "title": "CameraConfig",
+      "type": "object"
+    },
+    "CaptureStage": {
+      "enum": [
+        "validate",
+        "vision",
+        "deduplicate",
+        "speech"
+      ],
+      "title": "CaptureStage",
+      "type": "string"
+    },
+    "CaptureState": {
+      "enum": [
+        "UPLOADING",
+        "QUEUED",
+        "PROCESSING",
+        "READY",
+        "DUPLICATE",
+        "REJECTED",
+        "FAILED",
+        "CANCELLED"
+      ],
+      "title": "CaptureState",
+      "type": "string"
+    },
+    "Health": {
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "const": true,
+          "default": true,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "service": {
+          "const": "ai-book-reader",
+          "default": "ai-book-reader",
+          "title": "Service",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "service"
+      ],
+      "title": "Health",
+      "type": "object"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_captures_ahead": {
+          "default": 3,
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Max Captures Ahead",
+          "type": "integer"
+        },
+        "max_pages_per_session": {
+          "default": 100,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Pages Per Session",
+          "type": "integer"
+        },
+        "capture_attempts_per_day": {
+          "default": 200,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Capture Attempts Per Day",
+          "type": "integer"
+        },
+        "speech_attempts_per_day": {
+          "default": 200,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Speech Attempts Per Day",
+          "type": "integer"
+        },
+        "stage_attempts": {
+          "default": 3,
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Stage Attempts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_captures_ahead",
+        "max_pages_per_session",
+        "capture_attempts_per_day",
+        "speech_attempts_per_day",
+        "stage_attempts"
+      ],
+      "title": "Limits",
+      "type": "object"
+    },
+    "PlayableCapture": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Capture creation time in Unix seconds",
+          "title": "Created At",
+          "type": "integer"
+        },
+        "narration": {
+          "title": "Narration",
+          "type": "string"
+        },
+        "language": {
+          "title": "Language",
+          "type": "string"
+        },
+        "audio_chunks": {
+          "minimum": 1,
+          "title": "Audio Chunks",
+          "type": "integer"
+        },
+        "thumbnail_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thumbnail Url"
+        }
+      },
+      "required": [
+        "id",
+        "run_id",
+        "created_at",
+        "narration",
+        "language",
+        "audio_chunks",
+        "thumbnail_url"
+      ],
+      "title": "PlayableCapture",
+      "type": "object"
+    },
+    "PublicConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "local",
+            "aws"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "camera": {
+          "$ref": "#/$defs/CameraConfig"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "recognition_available": {
+          "default": false,
+          "title": "Recognition Available",
+          "type": "boolean"
+        },
+        "speech_available": {
+          "default": false,
+          "title": "Speech Available",
+          "type": "boolean"
+        },
+        "setup_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Setup Message"
+        }
+      },
+      "required": [
+        "mode",
+        "camera",
+        "limits",
+        "recognition_available",
+        "speech_available",
+        "setup_message"
+      ],
+      "title": "PublicConfig",
+      "type": "object"
+    },
+    "ReadingJob": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/CaptureState"
+        },
+        "stage": {
+          "$ref": "#/$defs/CaptureStage"
+        },
+        "narration": {
+          "default": "",
+          "title": "Narration",
+          "type": "string"
+        },
+        "language": {
+          "default": "",
+          "title": "Language",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "audio_chunks": {
+          "default": 0,
+          "title": "Audio Chunks",
+          "type": "integer"
+        },
+        "vision_model": {
+          "title": "Vision Model",
+          "type": "string"
+        },
+        "speech_model": {
+          "title": "Speech Model",
+          "type": "string"
+        },
+        "voice": {
+          "title": "Voice",
+          "type": "string"
+        },
+        "prompt_version": {
+          "default": "reader-vision-v3",
+          "title": "Prompt Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "stage",
+        "narration",
+        "language",
+        "reason",
+        "retryable",
+        "audio_chunks",
+        "vision_model",
+        "speech_model",
+        "voice",
+        "prompt_version"
+      ],
+      "title": "ReadingJob",
+      "type": "object"
+    },
+    "RecentCaptures": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/PlayableCapture"
+          },
+          "maxItems": 10,
+          "title": "Items",
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Cursor"
+        }
+      },
+      "required": [
+        "items",
+        "next_cursor"
+      ],
+      "title": "RecentCaptures",
+      "type": "object"
+    },
+    "SessionState": {
+      "enum": [
+        "ACTIVE",
+        "STOPPED",
+        "DELETING"
+      ],
+      "title": "SessionState",
+      "type": "string"
+    },
+    "VisionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "is_book_page": {
+          "title": "Is Book Page",
+          "type": "boolean"
+        },
+        "text_state": {
+          "enum": [
+            "readable",
+            "absent",
+            "unreadable"
+          ],
+          "title": "Text State",
+          "type": "string"
+        },
+        "ocr_text": {
+          "maxLength": 20000,
+          "title": "Ocr Text",
+          "type": "string"
+        },
+        "illustration_description": {
+          "maxLength": 1000,
+          "title": "Illustration Description",
+          "type": "string"
+        },
+        "language": {
+          "maxLength": 35,
+          "minLength": 2,
+          "title": "Language",
+          "type": "string"
+        },
+        "needs_retake": {
+          "title": "Needs Retake",
+          "type": "boolean"
+        },
+        "retake_reason": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retake Reason"
+        }
+      },
+      "required": [
+        "is_book_page",
+        "text_state",
+        "ocr_text",
+        "illustration_description",
+        "language",
+        "needs_retake",
+        "retake_reason"
+      ],
+      "title": "VisionResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "recent_captures": {
+      "$ref": "#/$defs/RecentCaptures"
+    },
+    "public_config": {
+      "$ref": "#/$defs/PublicConfig"
+    },
+    "health": {
+      "$ref": "#/$defs/Health"
+    },
+    "capture_state": {
+      "$ref": "#/$defs/CaptureState"
+    },
+    "capture_stage": {
+      "$ref": "#/$defs/CaptureStage"
+    },
+    "session_state": {
+      "$ref": "#/$defs/SessionState"
+    },
+    "audio_state": {
+      "$ref": "#/$defs/AudioState"
+    },
+    "vision_result": {
+      "$ref": "#/$defs/VisionResult"
+    },
+    "reading_job": {
+      "$ref": "#/$defs/ReadingJob"
+    }
+  },
+  "required": [
+    "recent_captures",
+    "public_config",
+    "health",
+    "capture_state",
+    "capture_stage",
+    "session_state",
+    "audio_state",
+    "vision_result",
+    "reading_job"
+  ],
+  "title": "ReaderContracts",
+  "type": "object"
+}

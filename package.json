@@ -1,0 +1,29 @@
+{
+  "name": "ai-book-reader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12" },
+  "workspaces": ["frontend"],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "contracts": "uv run --locked python -m scripts.export_contracts && json2ts -i frontend/src/api/schema.json -o frontend/src/api/contracts.generated.ts",
+    "typecheck": "tsc --noEmit -p frontend && tsc --noEmit -p infra",
+    "test": "vitest run",
+    "build": "npm run build --workspace frontend",
+    "package:backend": "bash scripts/package_backend.sh",
+    "deploy": "uv run --locked python -m scripts.deploy_cloud",
+    "synth": "cd infra && cdk synth --quiet",
+    "check": "bash scripts/check.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "aws-cdk": "^2.1141.0",
+    "aws-cdk-lib": "^2.277.0",
+    "constructs": "^10.8.1",
+    "json-schema-to-typescript": "^15.0.4",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.0.0"
+  }
+}

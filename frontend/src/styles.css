@@ -1,0 +1,66 @@
+:root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #293e37; background: #f5f1e9; font-synthesis: none; line-height: 1.6; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+button { cursor: pointer; border: 1px solid #c3cdc6; border-radius: 8px; background: #fffdf8; padding: 11px 19px; color: #293e37; font-weight: 600; min-height: 46px; }
+button:hover { background: #e9eee8; }
+button:disabled { opacity: .6; cursor: wait; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid #9b5f20; outline-offset: 4px; }
+.primary { background: #315e4b; border-color: #315e4b; color: #fff; }
+.primary:hover { background: #254d3c; }
+.site-header, main, footer { max-width: 1280px; margin: 0 auto; padding-left: 48px; padding-right: 48px; }
+.site-header { display: flex; align-items: center; justify-content: space-between; padding-top: 4px; padding-bottom: 4px; border-bottom: 1px solid #dddcd0; }
+.wordmark { text-decoration: none; font-family: Georgia, serif; font-size: 22px; font-weight: bold; color: #315e4b; letter-spacing: -1px; }
+.site-header button { padding: 3px 12px; min-height: 44px; font-size: 13px; }
+.prototype-tag, .eyebrow { font-size: 10px; letter-spacing: 2px; font-weight: 700; }
+.prototype-tag { border: 1px solid #becac0; padding: 6px 11px; border-radius: 20px; color: #526857; }
+main { padding-top: 24px; }
+.eyebrow { color: #657b66; }
+h1, h2, h3, p { margin-top: 0; }
+h2 { font-family: Georgia, serif; font-weight: 400; font-size: 25px; line-height: 1.3; margin: 7px 0 17px; }
+h3 { font-size: 17px; }
+.reader-layout { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 28px; align-items: start; }
+.camera-card { background: #fffdf8; padding: 25px; border: 1px solid #e1e2d7; border-radius: 15px; box-shadow: 0 5px 25px #233c2e05; }
+.section-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.section-heading h2 { font-size: 22px; }
+.recent-captures { border-top: 1px solid #dddcd0; margin-top: 20px; padding-top: 12px; }
+.recent-captures ol { list-style: none; padding: 0; }
+.recent-captures li { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.history-play { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; text-align: left; padding: 8px; }
+.history-play img, .thumbnail-placeholder { width: 56px; height: 56px; flex: none; border-radius: 5px; object-fit: cover; background: #edf1e8; }
+.thumbnail-placeholder { display: grid; place-items: center; color: #50634e; font-size: 12px; }
+.history-description { display: grid; min-width: 0; font-size: 13px; }
+.history-description span { font-weight: 400; overflow-wrap: anywhere; }
+.busy-dialog { position: fixed; inset: 0; margin: 0; border: 0; padding: 24px; width: 100%; height: 100%; max-width: none; max-height: none; color: #fff; background: #20372df2; text-align: center; }
+.busy-dialog[open] { display: grid; place-items: center; }
+.busy-dialog .spinner { display: inline-block; width: 48px; height: 48px; border-width: 4px; }
+.busy-dialog p { margin: 12px 0 20px; }
+input { accent-color: #315e4b; }
+.viewfinder { position: relative; width: 100%; margin: 0 auto; overflow: hidden; border-radius: 9px; background: #e9ede5; }
+.viewfinder video { display: block; width: 100%; height: 100%; }
+.frame-guide { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 8px; box-shadow: 0 0 0 2000px #15241a66; pointer-events: none; }
+.frame-guide span { position: absolute; bottom: 7px; width: 100%; text-align: center; color: #fff; text-shadow: 0 1px 4px #000; font-size: 12px; }
+.camera-controls { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 20px; }
+.capture-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; }
+.spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.hint { color: #69746a; font-size: 11px; margin: 14px 0 0; }
+.note-card { background: #e7ecdf; border-radius: 13px; padding: 26px; }
+.note-card h2 { font-size: 30px; margin-top: 17px; }
+.note-card ol { padding-left: 19px; font-size: 13px; line-height: 1.6; }
+.note-card li { padding-left: 4px; margin-bottom: 13px; }
+.small { font-size: 12px; color: #51634e; margin-bottom: 0; border-top: 1px solid #cbd4c2; padding-top: 16px; }
+.privacy-card { padding: 24px 8px; font-size: 12px; color: #627163; }
+.privacy-card h2 { font: 600 13px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; color: #3d5747; }
+.voice-disclosure { font-size: 11px; }
+.error { color: #8b3026; border-left: 3px solid #b64936; padding-left: 10px; margin: 15px 0 0; font-size: 13px; }
+.capture-result { margin-top: 22px; padding-top: 20px; border-top: 1px solid #dddcd0; }
+.capture-result p { font-size: 12px; color: #627163; }
+.capture-result .error { color: #8b3026; }
+.narration { margin: 18px 0; padding: 16px; background: #edf1e8; border-radius: 8px; }
+.narration p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 17px; color: #293e37; margin-bottom: 0; }
+.setup-message { font-size: 12px; color: #79541d; padding: 12px; background: #fff3da; border-radius: 8px; }
+footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 54px; padding-top: 22px; padding-bottom: 25px; font-size: 11px; border-top: 1px solid #dddcd0; color: #6d7a6b; }
+@media (max-width: 850px) { .reader-layout { grid-template-columns: minmax(0, 1fr); } aside { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; } }
+@media (max-width: 540px) { .site-header, main, footer { padding-left: 20px; padding-right: 20px; } .prototype-tag { font-size: 8px; letter-spacing: 1px; } main { padding-top: 16px; } .camera-card { padding: 16px; } .section-heading { align-items: start; } .section-heading h2 { font-size: 20px; } aside { display: block; } .camera-controls button { font-size: 12px; padding: 10px 13px; } footer { flex-direction: column; gap: 5px; } }
