@@ -138,8 +138,8 @@
       "additionalProperties": false,
       "properties": {
         "max_captures_ahead": {
-          "default": 3,
-          "maximum": 3,
+          "default": 10,
+          "maximum": 10,
           "minimum": 1,
           "title": "Max Captures Ahead",
           "type": "integer"
@@ -208,10 +208,46 @@
           "type": "string"
         },
         "audio_chunks": {
-          "description": "Zero while edited speech is unavailable",
+          "description": "Zero while speech is unavailable",
           "minimum": 0,
           "title": "Audio Chunks",
           "type": "integer"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CaptureState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Omitted for READY pages"
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retryable"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
         },
         "thumbnail_url": {
           "anyOf": [

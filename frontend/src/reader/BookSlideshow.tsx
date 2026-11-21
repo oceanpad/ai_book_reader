@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { readingAudio, readingOriginal, readingRequest, thumbnailSource } from "../api/client";
 import type { PlayableCapture } from "../api/contracts.generated";
 import "./BookSlideshow.css";
+import { pendingState } from "./useHistory";
 import { NarrationEditor, waitForNarration } from "./NarrationEditor";
 
 type Props = { pages: PlayableCapture[]; startIndex: number; close: () => void; changed?: (page: PlayableCapture) => void; onComplete?: () => void };
@@ -10,7 +11,7 @@ type Position = { index: number; status: Status };
 const pageDelaySeconds = 2;
 const initialIndex = (pages: PlayableCapture[], index: number) => Math.max(0, Math.min(pages.length - 1, Math.trunc(index) || 0));
 
-const awaitingPage = (page?: PlayableCapture) => page?.state === "UPLOADING" || page?.state === "QUEUED" || page?.state === "PROCESSING";
+const awaitingPage = (page?: PlayableCapture) => pendingState(page?.state);
 
 export function startBookPlayback(snapshot: PlayableCapture[], start: number, audio: HTMLAudioElement, update: (position: Position) => void, autoplay = true, onComplete?: () => void, onPage?: (index: number, page: PlayableCapture) => void) {
   const pages = snapshot.slice();
@@ -61,12 +62,19 @@ export function startBookPlayback(snapshot: PlayableCapture[], start: number, au
   }
   async function load() {
     release();
-    const page = pages[index];
-    if (!page || !page.audio_chunks) return report("error");
+    let page = pages[index];
+    if (!page) return report("error");
     request = new AbortController();
     const { signal } = request;
     report(wanted ? "loading" : "paused");
     try {
+      if (awaitingPage(page)) {
+        const job = await waitForNarration(page, await readingRequest(page.run_id, page.id, signal), signal);
+        if (signal.aborted) return;
+        page = pages[index] = { ...page, state: job.state, narration: job.narration, language: job.language, audio_chunks: job.audio_chunks, reason: job.reason, retryable: job.retryable };
+        onPage?.(index, page);
+      }
+      if (!page.audio_chunks) return report("error");
       const blob = await readingAudio(page.run_id, page.id, chunk, signal);
       if (signal.aborted) return;
       url = URL.createObjectURL(blob);
@@ -188,8 +196,11 @@ export function BookSlideshow({ pages, startIndex, close, changed, onComplete }:
   const [editing, setEditing] = useState<"edit" | "check" | null>(null);
   const [{ index, status }, update] = useState<Position>({ index: book.start, status: "loading" });
   const [expanded, setExpanded] = useState(false);
-  const page = book.pages[index];
-  const action = page && !page.audio_chunks ? "Check audio" : status === "error" ? "Retry audio" : status === "finished" ? "Replay" : ["loading", "playing", "thinking"].includes(status) ? "Pause" : "Play";
+  const [resolved, setResolved] = useState<Record<number, PlayableCapture>>({});
+  const page = resolved[index] ?? book.pages[index];
+  const pending = awaitingPage(page);
+  const unsuccessful = page && ["FAILED", "REJECTED", "DUPLICATE"].includes(page.state ?? "");
+  const action = page && !page.audio_chunks && !pending ? "Check audio" : status === "error" ? "Retry audio" : status === "finished" ? "Replay" : ["loading", "playing", "thinking"].includes(status) ? "Pause" : "Play";
   const icons = { "Check audio": "🔄", "Retry audio": "🔄", Replay: "🔁", Pause: "⏸️", Play: "▶️" };
   useEffect(() => {
     const modal = dialog.current!;
@@ -197,14 +208,14 @@ export function BookSlideshow({ pages, startIndex, close, changed, onComplete }:
     return () => modal.close();
   }, []);
   useEffect(() => {
-    const session = startBookPlayback(book.pages, book.start, audio.current!, update, book.autoplay, () => completion.current?.());
+    const session = startBookPlayback(book.pages, book.start, audio.current!, update, book.autoplay, () => completion.current?.(), (i, item) => setResolved(previous => ({ ...previous, [i]: item })));
     player.current = session;
     return () => { session.dispose(); player.current = null; };
   }, [book]);
   function dismiss() { player.current?.dispose(); dialog.current?.close(); close(); }
   return <dialog ref={dialog} className="book-slideshow" aria-label="Book slideshow" onCancel={event => { event.preventDefault(); dismiss(); }}>
     <div className="book-slideshow-image" data-expanded={expanded && !editing}>
-      {page && <PagePreview key={index} page={page} />}
+      {page && (pending || (unsuccessful && !page.thumbnail_url) ? <p>{pending ? "Preparing this page…" : "This page is unavailable."}</p> : <PagePreview key={index} page={page} />)}
       {page && !editing && <>
         <button className="slide-arrow previous" aria-label="Previous page" disabled={index === 0} onClick={() => player.current?.move(-1)}>⬅️</button>
         <button className="slide-arrow next" aria-label="Next page" disabled={index === book.pages.length - 1} onClick={() => player.current?.move(1)}>➡️</button>
@@ -216,15 +227,16 @@ export function BookSlideshow({ pages, startIndex, close, changed, onComplete }:
       <div className="book-slideshow-content" key={index}>
       {page ? <><p className="book-slideshow-counter" role="status">Page {index + 1} of {book.pages.length}</p>
         {editing ? <NarrationEditor page={page} checkAudio={editing === "check"} cancel={() => setEditing(null)} changed={() => changed?.(page)} saved={updated => {
-          setBook({ pages: book.pages.map((item, i) => i === index ? updated : item), start: index, autoplay: false });
+          setBook({ pages: book.pages.map((item, i) => i === index ? { ...updated, state: "READY" } : resolved[i] ?? item), start: index, autoplay: false });
+          setResolved({});
           setEditing(null);
         }} /> : <p className="book-slideshow-text" lang={page.language}>{page.narration}</p>}
       </> : <p>No pages to show.</p>}
     </div>
     {page && !editing && <div className="book-slideshow-controls">
-      <p role="status">{page.audio_chunks ? messages[status] : "Edited audio is not ready. Select 🔄 to check its status."}</p>
-      <button aria-label={action} onClick={() => page.audio_chunks ? player.current?.toggle() : setEditing("check")}>{icons[action]}</button>
-      <button onClick={() => { player.current?.pause(); setEditing("edit"); }}>Edit text</button>
+      <p role="status">{pending && status === "loading" ? "Waiting for this page to finish processing…" : pending || page.audio_chunks ? messages[status] : page.reason || "Page audio is not ready. Check the page status in Book pages."}</p>
+      <button aria-label={action} disabled={unsuccessful && !page.retryable} onClick={() => action === "Check audio" ? setEditing("check") : player.current?.toggle()}>{icons[action]}</button>
+      <button disabled={pending || !page.narration} onClick={() => { player.current?.pause(); setEditing("edit"); }}>Edit text</button>
     </div>}
     </section>
     <audio ref={audio} />

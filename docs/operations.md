@@ -17,7 +17,7 @@ Confirm the SNS subscription sent to the supplied adult/alert email. Confirmed s
 
 **Operational alarms are not financial alerts.** No account-wide budget or monetary spending cap is configured by this private deployment. Configure an application-appropriate AWS Budget and provider spending limits before broader use. Budgets are delayed alerts, not hard stops. Durable daily attempt quotas include retries/chunks, but cannot guarantee a monetary maximum. Four-orientation OCR uses more image tokens than one view. Model calls can be billed again after a crash before checkpointing.
 
-The account has a total Lambda concurrency limit of 10. Worker SQS concurrency is limited to two, but there is no reserved capacity. Other applications in the account can cause throttling. If sustained, review account/service quotas and usage instead of increasing worker parallelism blindly.
+The account has a total Lambda concurrency limit of 10. New page jobs use one FIFO message group, so they run one at a time; there is no reserved Lambda capacity. The prior standard queue is retained to drain legacy deliveries. Other applications in the account can cause throttling. If sustained, review account/service quotas and usage instead of increasing worker parallelism blindly.
 
 ## Credentials and account recovery
 

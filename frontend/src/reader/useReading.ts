@@ -5,10 +5,10 @@ import type { PlayableCapture, ReadingJob } from "../api/contracts.generated";
 
 type SelectedCapture = { run: string; id: string; frame?: { image: Blob; mode: string }; pending?: boolean; checking?: boolean };
 
-export function useReading(run: string, bookId: string) {
+export function useReading(run: string, bookId: string, poll = true) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const current = useRef<SelectedCapture | null>(null);
-  const history = useHistory(run, bookId, observeHistory);
+  const history = useHistory(run, bookId, observeHistory, poll);
   const { refreshHistory } = history;
   const [deleting, setDeleting] = useState(false);
   const generation = useRef(0);

@@ -5,7 +5,7 @@ import type { CaptureState, PlayableCapture } from "../api/contracts.generated";
 export const pendingState = (state?: CaptureState | null) => state === "UPLOADING" || state === "QUEUED" || state === "PROCESSING";
 type Snapshot = { run: string; bookId: string; items: PlayableCapture[]; error: boolean };
 
-export function useHistory(run: string, bookId: string, observe?: (items?: PlayableCapture[]) => boolean) {
+export function useHistory(run: string, bookId: string, observe?: (items?: PlayableCapture[]) => boolean, poll = true) {
   const [revision, setRevision] = useState(0);
   const [page, setPage] = useState<Snapshot>();
   const observer = useRef(observe);
@@ -28,12 +28,13 @@ export function useHistory(run: string, bookId: string, observe?: (items?: Playa
       } else {
         setPage(previous => ({ run, bookId, items: previous?.run === run && previous.bookId === bookId ? previous.items : [], error: true }));
       }
+      if (!poll) return;
       const selectedPending = observer.current?.(items);
       if (selectedPending || pendingBook.current === key) timer = setTimeout(load, items ? 1000 : 3000);
     }
     void load();
     return () => { request.abort(); clearTimeout(timer); };
-  }, [run, bookId, revision]);
+  }, [run, bookId, revision, poll]);
 
   const current = page?.run === run && page.bookId === bookId ? page : undefined;
   return { items: current?.items ?? [], loading: !current, error: Boolean(current?.error), refreshHistory };

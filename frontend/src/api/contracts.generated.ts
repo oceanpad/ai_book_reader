@@ -67,9 +67,13 @@ export type CreatedAt = number;
 export type Narration = string;
 export type Language = string;
 /**
- * Zero while edited speech is unavailable
+ * Zero while speech is unavailable
  */
 export type AudioChunks = number;
+export type CaptureState =
+  "UPLOADING" | "QUEUED" | "PROCESSING" | "READY" | "DUPLICATE" | "REJECTED" | "FAILED" | "CANCELLED";
+export type Retryable = boolean | null;
+export type Reason = string | null;
 export type ThumbnailUrl = string | null;
 export type NextCursor = string | null;
 export type Mode = "local" | "aws";
@@ -92,8 +96,6 @@ export type SpeechAvailable = boolean;
 export type SetupMessage = string | null;
 export type Ok = true;
 export type Service = "ai-book-reader";
-export type CaptureState =
-  "UPLOADING" | "QUEUED" | "PROCESSING" | "READY" | "DUPLICATE" | "REJECTED" | "FAILED" | "CANCELLED";
 export type CaptureStage = "validate" | "vision" | "deduplicate" | "speech";
 export type SessionState = "ACTIVE" | "STOPPED" | "DELETING";
 export type AudioState = "AUDIO_PENDING" | "READY" | "AUDIO_FAILED";
@@ -107,8 +109,8 @@ export type RetakeReason = string | null;
 export type Id1 = string;
 export type Narration1 = string;
 export type Language2 = string;
-export type Reason = string | null;
-export type Retryable = boolean;
+export type Reason1 = string | null;
+export type Retryable1 = boolean;
 export type AudioChunks1 = number;
 export type VisionModel = string;
 export type SpeechModel = string;
@@ -137,6 +139,12 @@ export interface PlayableCapture {
   narration: Narration;
   language: Language;
   audio_chunks: AudioChunks;
+  /**
+   * Omitted for READY pages
+   */
+  state?: CaptureState | null;
+  retryable?: Retryable;
+  reason?: Reason;
   thumbnail_url: ThumbnailUrl;
 }
 export interface PublicConfig {
@@ -184,8 +192,8 @@ export interface ReadingJob {
   stage: CaptureStage;
   narration: Narration1;
   language: Language2;
-  reason: Reason;
-  retryable: Retryable;
+  reason: Reason1;
+  retryable: Retryable1;
   audio_chunks: AudioChunks1;
   vision_model: VisionModel;
   speech_model: SpeechModel;

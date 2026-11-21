@@ -13,11 +13,11 @@ function row(id: string, state?: ReadingJob["state"]): PlayableCapture {
 }
 let hook: ReturnType<typeof useReading>;
 let root: Root;
-function Harness({ book }: { book: string }) {
-  hook = useReading("run", book);
+function Harness({ book, poll }: { book: string; poll: boolean }) {
+  hook = useReading("run", book, poll);
   return <audio ref={hook.audioRef} />;
 }
-const mount = (book = "book") => act(async () => { root.render(<Harness key={book} book={book} />); });
+const mount = (book = "book", poll = true) => act(async () => { root.render(<Harness key={book} book={book} poll={poll} />); });
 const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 const image = new Blob(["page"]);
 beforeEach(() => {
@@ -82,6 +82,28 @@ test("loads terminal details once; a superseded audio fetch cannot autoplay", as
   expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
   expect(hook.job?.id).toBe(items[1].id);
   expect(hook.audioReady).toBe(false);
+});
+
+test("slideshow handoff suspends history polling; returning loads the selected audio without autoplay", async () => {
+  let items: PlayableCapture[] = [];
+  vi.mocked(allBookPages).mockImplementation(async () => items);
+  vi.mocked(submitReading).mockImplementation(async (_, id) => { items = [row(id, "QUEUED")]; return queued(id); });
+  vi.mocked(readingRequest).mockImplementation(async (_, id) => ({ ...queued(id), state: "READY", audio_chunks: 1 }));
+  vi.mocked(readingAudio).mockResolvedValue(image);
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:page");
+  await mount();
+  await act(async () => { await hook.submit(image, "spread"); hook.pause(); });
+  await mount("book", false);
+  const calls = vi.mocked(allBookPages).mock.calls.length;
+  items = [row(hook.job!.id)];
+  await tick(3000);
+  expect(allBookPages).toHaveBeenCalledTimes(calls);
+  expect(readingRequest).not.toHaveBeenCalled();
+  await mount();
+  expect(hook.audioReady).toBe(true);
+  expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+  await act(async () => { hook.replay(); });
+  expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(1);
 });
 
 test("queue-full errors unlock the camera; retry reuses the same capture and recovers failed work", async () => {

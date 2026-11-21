@@ -119,6 +119,22 @@ test("restarting after an edit discards the old pass and stale end events", asyn
   expect(edited.onComplete).not.toHaveBeenCalled();
 });
 
+test("waits for a queued page without skipping or prematurely counting it", async () => {
+  vi.useFakeTimers();
+  const queued = { ...pages[1], state: "QUEUED" as const, audio_chunks: 0 };
+  const job = { ...queued, stage: "vision", reason: null, retryable: false, vision_model: "v", speech_model: "s", voice: "x", prompt_version: "1" } satisfies ReadingJob;
+  vi.mocked(readingRequest).mockResolvedValueOnce(job).mockResolvedValueOnce({ ...job, state: "READY", audio_chunks: 1 });
+  const { audio, onComplete } = open(0, [pages[0], queued]);
+  await vi.advanceTimersByTimeAsync(0);
+  audio.onended!(); await vi.advanceTimersByTimeAsync(2000);
+  expect(chunks()).toEqual([["old", 0]]);
+  expect(onComplete).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(chunks()).toEqual([["old", 0], ["middle", 0]]);
+  audio.onended!();
+  expect(onComplete).toHaveBeenCalledTimes(1);
+});
+
 test("pausing during thinking time holds the page until Play", async () => {
   const { audio, player } = open(0); await settle();
   vi.useFakeTimers();

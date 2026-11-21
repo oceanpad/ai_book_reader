@@ -18,8 +18,9 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
   const config = publicConfig.camera;
   const canRead = publicConfig.recognition_available && publicConfig.speech_available;
   const camera = useCamera();
-  const reading = useReading(run, book.id);
   const [slide, setSlide] = useState<number | null>(preview ? 0 : null);
+  // The slideshow follows its active page itself while the history is covered.
+  const reading = useReading(run, book.id, slide === null);
   function openSlides(index: number) {
     camera.stop();
     reading.pause();
@@ -28,12 +29,14 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
   const [editing, setEditing] = useState(false);
   const editAccepted = useRef(false);
   const captureVersion = useRef(0);
+  const frameInFlight = useRef(false);
   const [previewOnlyDone, setPreviewOnlyDone] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const cancelFrame = useCallback(() => {
     captureVersion.current += 1;
+    frameInFlight.current = false;
     setCapturing(false);
   }, []);
   useEffect(() => {
@@ -44,7 +47,8 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
 
   async function takeCapture() {
     const video = camera.videoRef.current;
-    if (!video || camera.status !== "live") return;
+    if (!video || camera.status !== "live" || frameInFlight.current) return;
+    frameInFlight.current = true;
     const version = ++captureVersion.current;
     setCapturing(true);
     setError(null);
@@ -56,7 +60,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
     } catch (cause) {
       if (version === captureVersion.current) setError(cameraError(cause));
     } finally {
-      if (version === captureVersion.current) setCapturing(false);
+      if (version === captureVersion.current) { frameInFlight.current = false; setCapturing(false); }
     }
   }
 
@@ -105,7 +109,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
           /> : reading.job?.narration && <div className="narration"><h3>{reading.job.language ? `Page narration (${reading.job.language})` : "Page narration"}</h3><p lang={reading.job.language}>{reading.job.narration}</p></div>}
           {pendingState(reading.job?.state) && <p role="status">Page accepted ({reading.job?.state.toLowerCase()}). You can capture the next page or switch books.</p>}
           {reading.job?.reason && <p className="error" role="alert">{reading.job.reason}</p>}
-          {((reading.job?.state === "FAILED" && reading.job.retryable) || reading.error) && !processing && !reading.cleanupFailed && <button onClick={() => void reading.recover()}>{reading.job?.stage === "speech" ? "Retry Audio" : "Retry / Check Status"}</button>}
+          {((reading.job?.state === "FAILED" && reading.job.retryable) || reading.error) && !processing && !reading.cleanupFailed && <button disabled={queueFull && (!reading.job || reading.job.state === "FAILED")} onClick={() => void reading.recover()}>{reading.job?.stage === "speech" ? "Retry Audio" : "Retry / Check Status"}</button>}
           {!editing && reading.audioReady && <div className="camera-controls">
             {!reading.finished && <button className="primary" onClick={() => reading.playing ? reading.pause() : void reading.play()}>{reading.playing ? "Pause" : "Play"}</button>}
             <button onClick={reading.replay}>Replay</button>
