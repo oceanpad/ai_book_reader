@@ -35,6 +35,8 @@ test("shows the selected page and complete narration inside a named dialog", () 
   const html = renderToStaticMarkup(<BookSlideshow pages={pages} startIndex={1} close={() => {}} />);
   expect(html).toContain('<dialog class="book-slideshow" aria-label="Book slideshow"');
   expect(html).toContain("Page 2 of 3");
+  expect(html).toContain(">Pause</button>");
+  expect(html).toMatch(/<header\b[^>]*>.*?>Close<\/button><\/header>/s);
   expect(html).toContain(pages[1].narration);
   expect(html).not.toContain(pages[0].narration);
 });

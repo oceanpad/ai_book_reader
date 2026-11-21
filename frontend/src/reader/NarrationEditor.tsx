@@ -48,10 +48,10 @@ export function NarrationEditor<T extends NarratedPage>({ page, saved, cancel, c
   }
   return <form className="narration-editor" onSubmit={event => { event.preventDefault(); void submit(); }}>
     <label htmlFor="page-narration">Recognized text</label>
-    <textarea id="page-narration" autoFocus rows={6} maxLength={20000} lang={page.language} value={draft} disabled={busy || next !== "save"} onChange={event => setDraft(event.target.value)} />
-    <p>Saving replaces this page’s narration with audio generated from your text.</p>
-    {busy && <p role="status">Regenerating audio…</p>}{error && <p role="alert">{error}</p>}
-    <button className="primary" disabled={busy || (next === "save" && (!draft.trim() || draft.trim() === page.narration.trim()))}>{next === "retry" ? "Retry audio" : next === "check" ? "Check status" : "Save and regenerate audio"}</button>
-    {next === "save" && <button type="button" disabled={busy} onClick={cancel}>Cancel</button>}
+    <textarea id="page-narration" aria-describedby="narration-save-note" autoFocus rows={6} maxLength={20000} lang={page.language} value={draft} disabled={busy || next !== "save"} onChange={event => setDraft(event.target.value)} />
+    <p id="narration-save-note" className="studio-guide">Saving replaces this page’s narration with audio generated from your text.</p>
+    {busy && <p role="status">Regenerating audio…</p>}{error && <p className="error" role="alert">{error}</p>}
+    <div className="studio-actions"><button className="primary" disabled={busy || (next === "save" && (!draft.trim() || draft.trim() === page.narration.trim()))}>{next === "retry" ? "Retry audio" : next === "check" ? "Check status" : "Save and regenerate audio"}</button>
+    {next === "save" && <button type="button" disabled={busy} onClick={cancel}>Cancel</button>}</div>
   </form>;
 }

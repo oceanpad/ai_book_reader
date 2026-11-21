@@ -7,7 +7,10 @@ export function BusyDialog({ message, onStop }: { message: string; onStop: () =>
     dialog.showModal();
     return () => dialog.close();
   }, []);
-  return <dialog ref={ref} className="busy-dialog" aria-label="Preparing your reading" onCancel={event => { event.preventDefault(); onStop(); }}>
-    <div><span className="spinner" aria-hidden="true" /><p role="status">{message}</p><button onClick={onStop}>Stop waiting</button></div>
+  return <dialog ref={ref} className="studio-dialog studio-busy" aria-label="Preparing your reading" onCancel={event => { event.preventDefault(); onStop(); }}>
+    <span className="spinner" aria-hidden="true" />
+    <h2>Preparing your reading</h2>
+    <p role="status">{message}</p>
+    <button onClick={onStop}>Stop waiting</button>
   </dialog>;
 }

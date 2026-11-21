@@ -18,13 +18,15 @@ From **My books**, select **Create new book**, enter a name, and choose **Create
 
 Recognition uses `reader-vision-v3`: the server supplies four orientations of the **same capture** in one vision request, so sideways/upside-down Chinese is read from an upright view rather than guessed. Each view is capped at 1,600 pixels and under 500 KB before base64; server JPEG sanitization avoids chroma subsampling that can smear small characters. This increases image-token cost compared with a single view; it is still one provider attempt. The UI displays the OCR prompt version after a successful reading. For small print, move closer, fill the preview, keep all lines visible, and use even light. The 25-case synthetic Chinese check passed; it is not a guarantee for every real book or blurred image.
 
-**My books** shows **Completed reads** for each book. A read counts once when every page has been narrated in order and the last page finishes. Pausing is fine; skipping unread pages or closing early does not count. A full replay adds one more. Signed-in counts are private to your account and start at zero.
+**My books** is a searchable shelf. Filter by title, open a book to capture pages, or select **Slide Preview** to listen from the beginning. **Reading guide** in the header explains capture, playback, and provider privacy without leaving the current book. The studio follows the system light or dark appearance.
+
+The shelf shows **Completed reads** for each book. A read counts once when every page has been narrated in order and the last page finishes. Pausing is fine; skipping unread pages or closing early does not count. A full replay adds one more. Signed-in counts are private to your account and start at zero.
 
 Select **Rename** beside the title on a book’s detail page, enter the new name, and choose **Save name**. The book keeps its pages and cover.
 
-Under **Book pages**, select **Set as cover** beside a page photo. Its thumbnail appears next to the book name on **My books**. Choosing another page replaces the cover; deleting the cover page leaves the book without a cover.
+Under **Book pages**, expand **Page options** for the desired photo and select **Set as cover**. Its thumbnail appears next to the book name on **My books**. Choosing another page replaces the cover; deleting the cover page leaves the book without a cover.
 
-At the bottom of a named book, select **Delete book** and then **Confirm delete book** to permanently remove it and all its pages, including unfinished pages and their media. **Cancel** keeps the book. **Earlier captures** cannot be deleted as a book; its recordings can be removed individually.
+At the bottom of a named book, expand **Manage book**, select **Delete book** and then **Confirm delete book** to permanently remove it and all its pages, including unfinished pages and their media. **Cancel** keeps the book. **Earlier captures** cannot be deleted as a book; its recordings can be removed individually.
 
 After submitting a photo, select **Edit text** next to **Selected capture** to pause playback and correct the recognized words in place. For older pages, **Edit text** is also available in the slideshow. **Save and regenerate audio** generates a new recording from the edited text without scanning the image again. Tap ▶️ when you’re ready to listen.
 

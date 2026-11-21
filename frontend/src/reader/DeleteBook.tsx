@@ -26,16 +26,18 @@ export function DeleteBook({ book, run, disabled, done }: { book: Book; run: str
   }
 
   if (book.id === "earlier") return null;
-  return <footer>
-    <button disabled={disabled} onClick={() => { setError(undefined); dialog.current?.showModal(); }}>Delete book</button>
-    <dialog ref={dialog} aria-label="Delete book" onCancel={event => { if (request.current) event.preventDefault(); }}>
+  return <details className="studio-management">
+    <summary>Manage book</summary>
+    <p>Remove this book and its recorded pages from your library.</p>
+    <button className="studio-danger" disabled={disabled} onClick={() => { setError(undefined); dialog.current?.showModal(); }}>Delete book</button>
+    <dialog ref={dialog} className="studio-dialog" aria-describedby="delete-book-warning" aria-label="Delete book" onCancel={event => { if (request.current) event.preventDefault(); }}>
       <h2>Delete {book.name}?</h2>
-      <p>This permanently deletes the book, all its pages, images, and narration. This cannot be undone.</p>
-      {error && <p role="alert">{error}</p>}
+      <p id="delete-book-warning">This permanently deletes the book, all its pages, images, and narration. This cannot be undone.</p>
+      {error && <p className="error" role="alert">{error}</p>}
       <div className="camera-controls">
         <button autoFocus disabled={busy} onClick={() => dialog.current?.close()}>Cancel</button>
-        <button disabled={busy} onClick={() => void confirm()}>{busy ? "Deleting…" : "Confirm delete book"}</button>
+        <button className="studio-danger" disabled={busy} onClick={() => void confirm()}>{busy ? "Deleting…" : "Confirm delete book"}</button>
       </div>
     </dialog>
-  </footer>;
+  </details>;
 }

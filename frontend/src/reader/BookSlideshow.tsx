@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { readingAudio, readingOriginal, readingRequest, thumbnailSource } from "../api/client";
 import type { PlayableCapture } from "../api/contracts.generated";
 import "./BookSlideshow.css";
@@ -196,12 +196,12 @@ export function BookSlideshow({ pages, startIndex, close, changed, onComplete }:
   const [editing, setEditing] = useState<"edit" | "check" | null>(null);
   const [{ index, status }, update] = useState<Position>({ index: book.start, status: "loading" });
   const [expanded, setExpanded] = useState(false);
+  const panelId = useId();
   const [resolved, setResolved] = useState<Record<number, PlayableCapture>>({});
   const page = resolved[index] ?? book.pages[index];
   const pending = awaitingPage(page);
   const unsuccessful = page && ["FAILED", "REJECTED", "DUPLICATE"].includes(page.state ?? "");
   const action = page && !page.audio_chunks && !pending ? "Check audio" : status === "error" ? "Retry audio" : status === "finished" ? "Replay" : ["loading", "playing", "thinking"].includes(status) ? "Pause" : "Play";
-  const icons = { "Check audio": "🔄", "Retry audio": "🔄", Replay: "🔁", Pause: "⏸️", Play: "▶️" };
   useEffect(() => {
     const modal = dialog.current!;
     modal.showModal();
@@ -214,30 +214,33 @@ export function BookSlideshow({ pages, startIndex, close, changed, onComplete }:
   }, [book]);
   function dismiss() { player.current?.dispose(); dialog.current?.close(); close(); }
   return <dialog ref={dialog} className="book-slideshow" aria-label="Book slideshow" onCancel={event => { event.preventDefault(); dismiss(); }}>
+    <header className="book-slideshow-heading">
+      <h2>Book slideshow</h2>
+      {page && <p className="book-slideshow-counter" role="status">Page {index + 1} of {book.pages.length}</p>}
+      <button autoFocus onClick={dismiss}>Close</button>
+    </header>
     <div className="book-slideshow-image" data-expanded={expanded && !editing}>
       {page && (pending || (unsuccessful && !page.thumbnail_url) ? <p>{pending ? "Preparing this page…" : "This page is unavailable."}</p> : <PagePreview key={index} page={page} />)}
       {page && !editing && <>
-        <button className="slide-arrow previous" aria-label="Previous page" disabled={index === 0} onClick={() => player.current?.move(-1)}>⬅️</button>
-        <button className="slide-arrow next" aria-label="Next page" disabled={index === book.pages.length - 1} onClick={() => player.current?.move(1)}>➡️</button>
-        <button className="book-image-toggle" aria-pressed={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? "Show text & controls" : "Expand image"}</button>
+        <button className="slide-arrow previous" aria-label="Previous page" disabled={index === 0} onClick={() => player.current?.move(-1)}>‹</button>
+        <button className="slide-arrow next" aria-label="Next page" disabled={index === book.pages.length - 1} onClick={() => player.current?.move(1)}>›</button>
+        <button className="book-image-toggle" aria-controls={panelId} aria-expanded={!expanded} onClick={() => setExpanded(value => !value)}>{expanded ? "Show text & controls" : "Expand image"}</button>
       </>}
     </div>
-    <section className="book-slideshow-panel">
-      <header><h2>Book slideshow</h2><button onClick={dismiss}>Close</button></header>
-      <div className="book-slideshow-content" key={index}>
-      {page ? <><p className="book-slideshow-counter" role="status">Page {index + 1} of {book.pages.length}</p>
-        {editing ? <NarrationEditor page={page} checkAudio={editing === "check"} cancel={() => setEditing(null)} changed={() => changed?.(page)} saved={updated => {
+    <section id={panelId} className="book-slideshow-panel">
+      <div className="book-slideshow-content" key={index} tabIndex={0} role="region" aria-label="Narration">
+        <h3>Narration</h3>
+        {!page ? <p>No pages to show.</p> : editing ? <NarrationEditor page={page} checkAudio={editing === "check"} cancel={() => setEditing(null)} changed={() => changed?.(page)} saved={updated => {
           setBook({ pages: book.pages.map((item, i) => i === index ? { ...updated, state: "READY" } : resolved[i] ?? item), start: index, autoplay: false });
           setResolved({});
           setEditing(null);
         }} /> : <p className="book-slideshow-text" lang={page.language}>{page.narration}</p>}
-      </> : <p>No pages to show.</p>}
-    </div>
-    {page && !editing && <div className="book-slideshow-controls">
-      <p role="status">{pending && status === "loading" ? "Waiting for this page to finish processing…" : pending || page.audio_chunks ? messages[status] : page.reason || "Page audio is not ready. Check the page status in Book pages."}</p>
-      <button aria-label={action} disabled={unsuccessful && !page.retryable} onClick={() => action === "Check audio" ? setEditing("check") : player.current?.toggle()}>{icons[action]}</button>
-      <button disabled={pending || !page.narration} onClick={() => { player.current?.pause(); setEditing("edit"); }}>Edit text</button>
-    </div>}
+      </div>
+      {page && !editing && <div className="book-slideshow-controls">
+        <p role="status">{pending && status === "loading" ? "Waiting for this page to finish processing…" : pending || page.audio_chunks ? messages[status] : page.reason || "Page audio is not ready. Check the page status in Book pages."}</p>
+        <button className="book-playback-action" disabled={unsuccessful && !page.retryable} onClick={() => action === "Check audio" ? setEditing("check") : player.current?.toggle()}>{action}</button>
+        <button disabled={pending || !page.narration} onClick={() => { player.current?.pause(); setEditing("edit"); }}>Edit text</button>
+      </div>}
     </section>
     <audio ref={audio} />
   </dialog>;

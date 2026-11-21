@@ -11,6 +11,7 @@ import { useReading } from "../reader/useReading";
 import { pendingState } from "../reader/useHistory";
 import { captureAndStop, MIN_PAGE_ASPECT } from "./frame";
 import { cameraError, useCamera } from "./useCamera";
+import "./recording.css";
 
 type Props = { config: PublicConfig; book: Book; run: string; preview: boolean; back: () => void; onComplete?: () => void };
 export function Camera({ config: publicConfig, book: initialBook, run, preview, back, onComplete }: Props) {
@@ -74,30 +75,37 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
   const pending = reading.history.items.filter(item => pendingState(item.state));
   const queueFull = canRead && pending.length >= limit;
   return (
-    <section className="camera-card" aria-label="Book camera and narration">
-      <button onClick={back} disabled={busy || reading.cleaning || reading.deleting}>← Books</button>
-      <BookHeading book={book} run={run} disabled={processing} renamed={name => setBook(current => ({ ...current, name }))} />
+    <section className="camera-card recording-studio" aria-label="Book camera and narration">
+      <header className="studio-masthead">
+        <div className="studio-topline"><button onClick={back} disabled={busy || reading.cleaning || reading.deleting}>← Books</button><span className="eyebrow">Reading studio</span></div>
+        <BookHeading book={book} run={run} disabled={processing} renamed={name => setBook(current => ({ ...current, name }))} />
+      </header>
       {slide !== null && !reading.history.loading && (!reading.history.error || reading.history.items.length > 0) && <BookSlideshow onComplete={onComplete} pages={reading.history.items} startIndex={slide} changed={page => { if (reading.job?.id === page.id && reading.job.state === "READY") void reading.reset(false); }} close={() => { setSlide(null); reading.history.refreshHistory(); }} />}
       {busy && <BusyDialog message={stage} onStop={() => { cancelFrame(); reading.interrupt(); }} />}
-      <div hidden={!live && !starting} className="viewfinder" style={{ aspectRatio: frameAspect, maxWidth: `min(66.67vw, calc(66.67svh * ${frameAspect}))` }}>
-        <video ref={camera.videoRef} muted playsInline onResize={camera.resize} aria-label="Live camera preview" />
-      </div>
-      <div className="camera-controls">
-        {!live && <button className="primary" disabled={starting || processing || queueFull} onClick={() => { setSlide(null); setError(null); setPreviewOnlyDone(false); reading.pause(); void camera.start(); }}>{starting ? "Starting..." : camera.status === "paused" ? "Continue" : camera.status === "error" ? "Try Camera Again" : reading.job ? "Capture next page" : "Start Reading"}</button>}
-        {live && <button className="primary capture-button" aria-busy={processing} disabled={processing || reading.cleanupFailed || queueFull} onClick={() => void takeCapture()}>Submit</button>}
-        {live && <button disabled={processing} onClick={() => void camera.start(camera.facing === "environment" ? "user" : "environment")}>Switch Camera</button>}
-      </div>
-      {queueFull && <p role="status">The queue is full ({limit} pending pages). Capture another page when one finishes.</p>}
-      {(camera.error || error) && <p className="error" role="alert">{camera.error || error}</p>}
-      {reading.error && <p className="error" role="alert">{reading.error}</p>}
-      {reading.cleanupFailed && <button onClick={() => void reading.reset()}>Retry Discard</button>}
-      <audio ref={reading.audioRef} onEnded={reading.ended} onError={reading.playbackError} preload="auto" />
-      <p className="hint">{canRead ? "Start opens the camera without a microphone. Submit captures the framed page, turns off the camera, and requests AI-generated narration." : "Camera preview only. Configure server credentials to enable recognition and narration."}</p>
-      {publicConfig.setup_message && <p className="setup-message" role="status">{publicConfig.setup_message}</p>}
-      {previewOnlyDone && <p role="status">Page captured. The camera is off. Narration is not configured.</p>}
+      <section className="studio-capture" aria-labelledby="capture-title">
+        <div className="studio-topline"><span className="eyebrow">Capture desk</span><span className="studio-badge">{live ? "Camera live" : starting ? "Opening camera…" : "Camera off"}</span></div>
+        <h2 id="capture-title">Record a page</h2>
+        <p className="studio-guide">{live ? "Fit the page inside the frame, then select Submit." : "Open your book to the page you want to capture."}</p>
+        <div hidden={!live && !starting} className="viewfinder" style={{ aspectRatio: frameAspect, maxWidth: `calc(62svh * ${frameAspect})` }}>
+          <video ref={camera.videoRef} muted playsInline onResize={camera.resize} aria-label="Live camera preview" />
+        </div>
+        <p id="studio-submit-note" className="studio-note">{canRead ? "Submit sends this page to OpenRouter and its routed providers for text recognition and AI speech. The camera turns off; no microphone is used." : "Camera preview only. Configure server credentials to enable recognition and narration."}</p>
+        <div className="camera-controls">
+          {!live && <button className="primary" disabled={starting || processing || queueFull} onClick={() => { setSlide(null); setError(null); setPreviewOnlyDone(false); reading.pause(); void camera.start(); }}>{starting ? "Starting…" : camera.status === "paused" ? "Continue" : camera.status === "error" ? "Try Camera Again" : reading.job ? "Capture next page" : "Start Reading"}</button>}
+          {live && <button className="primary" aria-describedby="studio-submit-note" aria-busy={processing} disabled={processing || reading.cleanupFailed || queueFull} onClick={() => void takeCapture()}>Submit</button>}
+          {live && <button disabled={processing} onClick={() => void camera.start(camera.facing === "environment" ? "user" : "environment")}>Switch Camera</button>}
+        </div>
+        {queueFull && <p role="status">The queue is full ({limit} pending pages). Capture another page when one finishes.</p>}
+        {(camera.error || error) && <p className="error" role="alert">{camera.error || error}</p>}
+        {reading.error && <p className="error" role="alert">{reading.error}</p>}
+        {reading.cleanupFailed && <button onClick={() => void reading.reset()}>Retry Discard</button>}
+        <audio ref={reading.audioRef} onEnded={reading.ended} onError={reading.playbackError} preload="auto" />
+        {publicConfig.setup_message && <p className="studio-notice" role="status">{publicConfig.setup_message}</p>}
+        {previewOnlyDone && <p role="status">Page captured. The camera is off. Narration is not configured.</p>}
+      </section>
       {(reading.job || reading.error) && (
-        <div className="capture-result">
-          <div className="section-heading"><h3>Selected capture</h3>
+        <section className="studio-result" aria-labelledby="studio-selected">
+          <div className="section-heading studio-section-title"><div><span className="eyebrow">Listening desk</span><h2 id="studio-selected">Selected capture</h2></div>
             {reading.job?.state === "READY" ? !editing && <button disabled={processing} onClick={() => {
               camera.stop(); reading.pause(); editAccepted.current = false; setEditing(true);
             }}>Edit text</button> : !reading.cleanupFailed && <button disabled={processing} onClick={() => void reading.reset()}>Discard</button>}
@@ -106,7 +114,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
             changed={() => { editAccepted.current = true; reading.history.refreshHistory(); }}
             saved={(_, updated) => { setEditing(false); reading.history.refreshHistory(); void reading.recover(updated); }}
             cancel={() => { setEditing(false); if (editAccepted.current) void reading.recover(); }}
-          /> : reading.job?.narration && <div className="narration"><h3>{reading.job.language ? `Page narration (${reading.job.language})` : "Page narration"}</h3><p lang={reading.job.language}>{reading.job.narration}</p></div>}
+          /> : reading.job?.narration && <div className="studio-transcript"><h3>{reading.job.language ? `Page narration (${reading.job.language})` : "Page narration"}</h3><p lang={reading.job.language}>{reading.job.narration}</p></div>}
           {pendingState(reading.job?.state) && <p role="status">Page accepted ({reading.job?.state.toLowerCase()}). You can capture the next page or switch books.</p>}
           {reading.job?.reason && <p className="error" role="alert">{reading.job.reason}</p>}
           {((reading.job?.state === "FAILED" && reading.job.retryable) || reading.error) && !processing && !reading.cleanupFailed && <button disabled={queueFull && (!reading.job || reading.job.state === "FAILED")} onClick={() => void reading.recover()}>{reading.job?.stage === "speech" ? "Retry Audio" : "Retry / Check Status"}</button>}
@@ -115,8 +123,11 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
             <button onClick={reading.replay}>Replay</button>
           </div>}
           {!editing && reading.playbackMessage && <p role="status">{reading.playbackMessage}</p>}
-          {reading.job?.state === "READY" && <p className="hint">AI-generated voice / {reading.job.vision_model} / OCR {reading.job.prompt_version} / {reading.job.speech_model} / {reading.job.voice}. Evaluation settings, not yet quality-certified.</p>}
-        </div>
+          {reading.job?.state === "READY" && <details className="studio-provenance"><summary>AI-generated voice details</summary>
+            <dl><dt>Recognition</dt><dd>{reading.job.vision_model} · OCR {reading.job.prompt_version}</dd><dt>Speech</dt><dd>{reading.job.speech_model} · {reading.job.voice}</dd></dl>
+            <p>Evaluation settings, not yet quality-certified.</p>
+          </details>}
+        </section>
       )}
       <HistoryCards book={book} run={run} history={reading.history} disabled={processing || reading.cleanupFailed} remove={reading.remove} play={openSlides} />
       <DeleteBook book={book} run={run} disabled={processing} done={back} />
