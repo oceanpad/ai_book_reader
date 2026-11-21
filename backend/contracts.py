@@ -155,6 +155,11 @@ class BookCover(Contract):
 
 class Book(BookCreate):
     id: str
+    created_at: int | None = Field(
+        default=None,
+        description="Book creation time in Unix milliseconds, estimated from the earliest saved "
+        "page for legacy books", 
+    )
     cover: BookCover | None = None
     read_count: int | None = None
 

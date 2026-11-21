@@ -13,7 +13,7 @@ async function checked(response: Response): Promise<Response> {
   return response;
 }
 
-export type Book = { id: string; name: string; read_count?: number; cover?: { run_id: string; page_id: string; thumbnail_url: string } | null };
+export type Book = { id: string; name: string; created_at?: number | null; read_count?: number; cover?: { run_id: string; page_id: string; thumbnail_url: string } | null };
 const books = authEnabled ? "/api/books" : "/api/local/books";
 
 export async function listBooks(run: string, signal: AbortSignal): Promise<{items: Book[]}> {

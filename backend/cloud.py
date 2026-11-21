@@ -107,9 +107,12 @@ class CloudStore:
         return item
 
     def create_book(self, owner: str, name: str) -> Book:
-        book = Book(id=str(uuid4()), name=name)
+        book = Book(id=str(uuid4()), name=name, created_at=time.time_ns() // 1_000_000)
         self.table.put_item(
-            Item={"PK": f"USER#{owner}", "SK": f"BOOK#{book.id}", "name": book.name},
+            Item={
+                "PK": f"USER#{owner}", "SK": f"BOOK#{book.id}", "name": book.name,
+                "createdAtMs": book.created_at,
+            },
             ConditionExpression="attribute_not_exists(PK)",
         )
         return book
@@ -269,11 +272,19 @@ class CloudStore:
             id=book_id,
             name=name,
             cover=cover,
+            created_at=self._book_created_at(owner, book_id, book),
             read_count=int(str(book["readCount"])) if book and "readCount" in book else None,
         )
 
+    def _book_created_at(self, owner: str, book_id: str, row: dict[str, Any] | None) -> int | None:
+        if row and row.get("createdAtMs") is not None:
+            return int(row["createdAtMs"])
+        first = next(self._history_rows(owner, book_id, None, oldest_first=True), None)
+        return int(first["createdAt"]) * 1000 if first else None
+
     def books(self, owner: str) -> Books:
-        items = [EARLIER]
+        items: list[Book] = []
+        earlier = None
         start: dict[str, Any] = {}
         while True:
             page = self.table.query(
@@ -293,15 +304,19 @@ class CloudStore:
                 book = Book(
                     id=book_id,
                     name=str(row["name"]),
+                    created_at=self._book_created_at(owner, book_id, row),
                     cover=cover,
                     read_count=int(str(row["readCount"])) if "readCount" in row else None,
                 )
                 if book_id == EARLIER.id:
-                    items[0] = book
+                    earlier = book
                 else:
                     items.append(book)
             if "LastEvaluatedKey" not in page:
-                return Books(items=items)
+                if earlier is None:
+                    earlier = Book(id=EARLIER.id, name=EARLIER.name,
+                                   created_at=self._book_created_at(owner, EARLIER.id, None))
+                return Books(items=[earlier, *items])
             start = {"ExclusiveStartKey": page["LastEvaluatedKey"]}
 
     def check_book(self, owner: str, book_id: str | None) -> None:
@@ -400,7 +415,7 @@ class CloudStore:
         self.table.delete_item(Key=key)
 
     def _history_rows(
-        self, owner: str, book_id: str | None, before: int | None
+        self, owner: str, book_id: str | None, before: int | None, *, oldest_first: bool = False
     ) -> Iterator[dict[str, Any]]:
         named = book_id is not None and book_id != EARLIER.id
         condition: ConditionBase = (
@@ -414,7 +429,7 @@ class CloudStore:
                 IndexName="BookCapturesIndex" if named else "OwnerCapturesIndex",
                 KeyConditionExpression=condition,
                 FilterExpression=Attr("state").is_in(list(BOOK_STATES)),
-                ScanIndexForward=False,
+                ScanIndexForward=oldest_first,
                 Limit=RECENT_CAPTURE_LIMIT,
                 **start,
             )
@@ -431,7 +446,9 @@ class CloudStore:
                         or (item.get("state") == "READY" and item.get("audioKeys"))
                         or item.get("audioEdit")
                     )
+                    and "createdAt" in item
                     and item.get("state") in BOOK_STATES
+                    and ("expiresAt" not in item or item["expiresAt"] > int(time.time()))
                     and ("softExpires" not in item or item["softExpires"] > int(time.time()))
                 ):
                     yield item

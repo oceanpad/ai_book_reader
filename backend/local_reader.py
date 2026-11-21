@@ -111,8 +111,14 @@ class LocalReader:
         with closing(sqlite3.connect(path)) as db, db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS books "
-                "(owner TEXT, id TEXT, name TEXT NOT NULL, PRIMARY KEY(owner, id))"
+                "(owner TEXT, id TEXT, name TEXT NOT NULL, created_at INTEGER, PRIMARY KEY(owner, id))"
             )
+            if not db.execute("SELECT 1 FROM pragma_table_info('books') WHERE name='created_at'").fetchone():
+                db.execute("BEGIN IMMEDIATE")
+                # A concurrent request may have migrated the database while we waited.
+                if not db.execute("SELECT 1 FROM pragma_table_info('books') WHERE name='created_at'").fetchone():
+                    db.execute("ALTER TABLE books ADD COLUMN created_at INTEGER")
+                db.commit()
             db.execute(
                 "CREATE TABLE IF NOT EXISTS book_covers "
                 "(owner TEXT, book_id TEXT, page_id TEXT NOT NULL, PRIMARY KEY(owner, book_id))"
@@ -138,8 +144,17 @@ class LocalReader:
             thumbnail_url="data:image/jpeg;base64," + base64.b64encode(job.thumbnail).decode(),
         )
 
+    def _earliest_pages(self, owner: str) -> dict[str, int]:
+        earliest: dict[str, int] = {}
+        for job in self.jobs.values():
+            if job.run_id == owner and job.view.state != CaptureState.CANCELLED:
+                millis = job.created_at * 1000
+                earliest[job.book_id] = min(earliest.get(job.book_id, millis), millis)
+        return earliest
+
     def books(self, owner: str) -> Books:
         self.expire()
+        earliest = self._earliest_pages(owner)
         with self.book_db() as db:
             covers = dict(
                 db.execute("SELECT book_id, page_id FROM book_covers WHERE owner=?", (owner,))
@@ -147,16 +162,17 @@ class LocalReader:
             counts = dict(
                 db.execute("SELECT book_id, reads FROM book_counts WHERE owner=?", (owner,))
             )
-            rows = db.execute("SELECT id, name FROM books WHERE owner=? ORDER BY id", (owner,))
+            rows = db.execute("SELECT id, name, created_at FROM books WHERE owner=? ORDER BY id", (owner,))
             return Books(
                 items=[
                     Book(
                         id=i,
                         name=n,
+                        created_at=created_at if created_at is not None else earliest.get(i),
                         read_count=counts.get(i),
                         cover=self._cover(owner, i, covers[i]) if i in covers else None,
                     )
-                    for i, n in [(EARLIER.id, EARLIER.name), *rows]
+                    for i, n, created_at in [(EARLIER.id, EARLIER.name, None), *rows]
                 ]
             )
 
@@ -167,13 +183,14 @@ class LocalReader:
             raise LocalError("Cover page not found.", 404)
         with self.book_db() as db:
             name = EARLIER.name
+            created_at = None
             if book_id != EARLIER.id:
                 row = db.execute(
-                    "SELECT name FROM books WHERE owner=? AND id=?", (owner, book_id)
+                    "SELECT name, created_at FROM books WHERE owner=? AND id=?", (owner, book_id)
                 ).fetchone()
                 if row is None:
                     raise LocalError("Book not found.", 404)
-                name = row[0]
+                name, created_at = row
             db.execute(
                 "INSERT OR REPLACE INTO book_covers(owner, book_id, page_id) VALUES(?, ?, ?)",
                 (owner, book_id, page_id),
@@ -181,7 +198,10 @@ class LocalReader:
             count = db.execute(
                 "SELECT reads FROM book_counts WHERE owner=? AND book_id=?", (owner, book_id)
             ).fetchone()
-        return Book(id=book_id, name=name, cover=cover, read_count=count[0] if count else None)
+        return Book(
+            id=book_id, name=name, cover=cover, read_count=count[0] if count else None,
+            created_at=created_at if created_at is not None else self._earliest_pages(owner).get(book_id),
+        )
 
     def complete_book(self, owner: str, book_id: str, completion_id: str) -> int:
         with self.book_db() as db:
@@ -209,10 +229,11 @@ class LocalReader:
             )
 
     def create_book(self, owner: str, name: str) -> Book:
-        book = Book(id=str(uuid4()), name=name)
+        book = Book(id=str(uuid4()), name=name, created_at=time.time_ns() // 1_000_000)
         with self.book_db() as db:
             db.execute(
-                "INSERT INTO books(owner, id, name) VALUES(?, ?, ?)", (owner, book.id, book.name)
+                "INSERT INTO books(owner, id, name, created_at) VALUES(?, ?, ?, ?)",
+                (owner, book.id, book.name, book.created_at),
             )
         return book
 
