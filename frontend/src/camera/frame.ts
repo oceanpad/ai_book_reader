@@ -1,18 +1,18 @@
 import type { CameraConfig } from "../api/contracts.generated";
 
-export const MIN_PAGE_ASPECT = 3 / 4;
 export type CaptureMode = "spread" | "single";
-const FRAMES = {
-  spread: { width: 1, height: 1 },
-  single: { width: 0.6, height: 0.75 },
-} satisfies Record<CaptureMode, { width: number; height: number }>;
+export const FRAME_ASPECTS = {
+  single: 16 / 21,
+  spread: 31 / 20,
+} satisfies Record<CaptureMode, number>;
 
 export function frameBounds(width: number, height: number, mode: CaptureMode) {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new Error("The camera is not ready. Wait for the preview before capturing.");
   }
-  const cropWidth = Math.floor(width * FRAMES[mode].width);
-  const cropHeight = Math.floor(mode === "spread" ? Math.min(height, width / MIN_PAGE_ASPECT) : height * FRAMES[mode].height);
+  const aspect = FRAME_ASPECTS[mode];
+  const cropWidth = Math.floor(Math.min(width, height * aspect));
+  const cropHeight = Math.floor(Math.min(height, width / aspect));
   return {
     x: Math.floor((width - cropWidth) / 2),
     y: Math.floor((height - cropHeight) / 2),
@@ -56,15 +56,14 @@ async function jpeg(canvas: HTMLCanvasElement, quality: number) {
 
 type CaptureLimits = Pick<CameraConfig, "min_crop_width" | "min_crop_height" | "max_longest_edge" | "max_upload_bytes">;
 
-export function captureAndStop(video: HTMLVideoElement, limits: CaptureLimits, stop: () => void) {
+export function captureAndStop(video: HTMLVideoElement, mode: CaptureMode, limits: CaptureLimits, stop: () => void) {
   // captureFrame copies the pixels before its first await. Encoding needs no live stream.
-  const frame = captureFrame(video, limits);
+  const frame = captureFrame(video, mode, limits);
   stop();
   return frame;
 }
 
-export async function captureFrame(video: HTMLVideoElement, ...args: [CaptureLimits] | [CaptureMode, CaptureLimits]) {
-  const [mode, config] = args.length === 2 ? args : ["spread" as const, args[0]];
+export async function captureFrame(video: HTMLVideoElement, mode: CaptureMode, config: CaptureLimits) {
   const bounds = frameBounds(video.videoWidth, video.videoHeight, mode);
   if (video.readyState < 2) throw new Error("The camera is not ready. Wait for the preview before capturing.");
   if (bounds.width < config.min_crop_width || bounds.height < config.min_crop_height) {

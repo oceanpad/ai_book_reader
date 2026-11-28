@@ -5,10 +5,41 @@
  * and run json-schema-to-typescript to regenerate this file.
  */
 
+export type Subject = "math" | "english" | "chinese";
+export type Level = "kindergarten" | "primary1" | "primary2" | "primary3" | "primary4" | "primary5" | "primary6";
+/**
+ * @minItems 1
+ * @maxItems 4
+ */
+export type Images = [string] | [string, string] | [string, string, string] | [string, string, string, string];
+export type Id = string;
+export type CreatedAt = string;
+export type Subject1 = "math" | "english" | "chinese";
+export type Level1 = "kindergarten" | "primary1" | "primary2" | "primary3" | "primary4" | "primary5" | "primary6";
+export type State = "pending" | "ready" | "failed";
+export type Question = string;
+export type Answer = string;
+/**
+ * @maxItems 6
+ */
+export type Steps =
+  | []
+  | [string]
+  | [string, string]
+  | [string, string, string]
+  | [string, string, string, string]
+  | [string, string, string, string, string]
+  | [string, string, string, string, string, string];
+export type Language = "en" | "zh";
+export type Questions = HomeworkQuestion[];
+export type Note = string;
+export type Error = string | null;
+export type Items = HomeworkEntry[];
+export type NextCursor = string | null;
 /**
  * @maxItems 10
  */
-export type Items =
+export type Items1 =
   | []
   | [PlayableCapture]
   | [PlayableCapture, PlayableCapture]
@@ -58,14 +89,14 @@ export type Items =
       PlayableCapture,
       PlayableCapture
     ];
-export type Id = string;
+export type Id1 = string;
 export type RunId = string;
 /**
  * Capture creation time in Unix seconds
  */
-export type CreatedAt = number;
+export type CreatedAt1 = number;
 export type Narration = string;
-export type Language = string;
+export type Language1 = string;
 /**
  * Zero while speech is unavailable
  */
@@ -75,7 +106,7 @@ export type CaptureState =
 export type Retryable = boolean | null;
 export type Reason = string | null;
 export type ThumbnailUrl = string | null;
-export type NextCursor = string | null;
+export type NextCursor1 = string | null;
 export type Mode = "local" | "aws";
 export type SamplesPerSecond = number;
 export type StableWindowMs = number;
@@ -103,12 +134,12 @@ export type IsBookPage = boolean;
 export type TextState = "readable" | "absent" | "unreadable";
 export type OcrText = string;
 export type IllustrationDescription = string;
-export type Language1 = string;
+export type Language2 = string;
 export type NeedsRetake = boolean;
 export type RetakeReason = string | null;
-export type Id1 = string;
+export type Id2 = string;
 export type Narration1 = string;
-export type Language2 = string;
+export type Language3 = string;
 export type Reason1 = string | null;
 export type Retryable1 = boolean;
 export type AudioChunks1 = number;
@@ -116,8 +147,24 @@ export type VisionModel = string;
 export type SpeechModel = string;
 export type Voice = string;
 export type PromptVersion = string;
+export type Name = string;
+export type BookLevel = "P1" | "P2" | "P3" | "P4" | "P5" | "P6";
+export type BookLanguage = "en" | "zh";
+export type Id3 = string;
+/**
+ * Book creation time in Unix milliseconds, estimated from the earliest saved page for legacy books
+ */
+export type CreatedAt2 = number | null;
+export type RunId1 = string;
+export type PageId = string;
+export type ThumbnailUrl1 = string;
+export type ReadCount = number | null;
+export type Items2 = Book[];
+export type Name1 = string | null;
 
 export interface ReaderContracts {
+  homework_submission: HomeworkSubmission;
+  homework_history: HomeworkHistory;
   recent_captures: RecentCaptures;
   public_config: PublicConfig;
   health: Health;
@@ -127,17 +174,47 @@ export interface ReaderContracts {
   audio_state: AudioState;
   vision_result: VisionResult;
   reading_job: ReadingJob;
+  books: Books;
+  book_update: BookUpdate;
 }
-export interface RecentCaptures {
+export interface HomeworkSubmission {
+  subject: Subject;
+  level: Level;
+  images: Images;
+}
+export interface HomeworkHistory {
   items: Items;
   next_cursor: NextCursor;
 }
-export interface PlayableCapture {
+export interface HomeworkEntry {
   id: Id;
-  run_id: RunId;
   created_at: CreatedAt;
-  narration: Narration;
+  subject: Subject1;
+  level: Level1;
+  state: State;
+  result: HomeworkResult | null;
+  error: Error;
+}
+export interface HomeworkResult {
+  questions: Questions;
+  note: Note;
+}
+export interface HomeworkQuestion {
+  question: Question;
+  answer: Answer;
+  steps: Steps;
   language: Language;
+}
+export interface RecentCaptures {
+  items: Items1;
+  next_cursor: NextCursor1;
+}
+export interface PlayableCapture {
+  id: Id1;
+  run_id: RunId;
+  created_at: CreatedAt1;
+  narration: Narration;
+  language: Language1;
   audio_chunks: AudioChunks;
   /**
    * Omitted for READY pages
@@ -182,16 +259,16 @@ export interface VisionResult {
   text_state: TextState;
   ocr_text: OcrText;
   illustration_description: IllustrationDescription;
-  language: Language1;
+  language: Language2;
   needs_retake: NeedsRetake;
   retake_reason: RetakeReason;
 }
 export interface ReadingJob {
-  id: Id1;
+  id: Id2;
   state: CaptureState;
   stage: CaptureStage;
   narration: Narration1;
-  language: Language2;
+  language: Language3;
   reason: Reason1;
   retryable: Retryable1;
   audio_chunks: AudioChunks1;
@@ -199,4 +276,26 @@ export interface ReadingJob {
   speech_model: SpeechModel;
   voice: Voice;
   prompt_version: PromptVersion;
+}
+export interface Books {
+  items: Items2;
+}
+export interface Book {
+  name: Name;
+  level?: BookLevel | null;
+  language?: BookLanguage | null;
+  id: Id3;
+  created_at?: CreatedAt2;
+  cover?: BookCover | null;
+  read_count?: ReadCount;
+}
+export interface BookCover {
+  run_id: RunId1;
+  page_id: PageId;
+  thumbnail_url: ThumbnailUrl1;
+}
+export interface BookUpdate {
+  name?: Name1;
+  level?: BookLevel | null;
+  language?: BookLanguage | null;
 }

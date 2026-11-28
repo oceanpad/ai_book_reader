@@ -26,10 +26,10 @@ afterEach(() => vi.unstubAllGlobals());
 describe("JPEG capture", () => {
   test("accepts a JPEG without MIME metadata and freezes at the capped dimensions", async () => {
     const canvases = mockCanvas(() => new Blob([bytes]));
-    const result = await captureFrame(video, limits);
-    expect(result).toMatchObject({ mode: "spread", width: 1200, height: 600, blob: { type: "image/jpeg" } });
+    const result = await captureFrame(video, "spread", limits);
+    expect(result).toMatchObject({ mode: "spread", width: 1200, height: 774, blob: { type: "image/jpeg" } });
     expect(canvases).toHaveLength(1);
-    expect(canvases[0].drawImage).toHaveBeenCalledWith(video, 0, 0, 2000, 1000, 0, 0, 1200, 600);
+    expect(canvases[0].drawImage).toHaveBeenCalledWith(video, 225, 0, 1550, 1000, 0, 0, 1200, 774);
     expect(canvases[0].toDataURL).not.toHaveBeenCalled();
     expect(canvases[0]).toMatchObject({ width: 0, height: 0 });
   });
@@ -37,8 +37,8 @@ describe("JPEG capture", () => {
   test("crops tall camera input to the centered portrait book preview", async () => {
     const portrait = { videoWidth: 1080, videoHeight: 1920, readyState: 2 } as HTMLVideoElement;
     const canvases = mockCanvas(() => new Blob([bytes]));
-    await captureFrame(portrait, limits);
-    expect(canvases[0].drawImage).toHaveBeenCalledWith(portrait, 0, 240, 1080, 1440, 0, 0, 900, 1200);
+    await captureFrame(portrait, "single", limits);
+    expect(canvases[0].drawImage).toHaveBeenCalledWith(portrait, 0, 251, 1080, 1417, 0, 0, 915, 1200);
   });
 
   test("Submit stops the camera after freezing pixels, without waiting on the JPEG encoder", async () => {
@@ -46,7 +46,7 @@ describe("JPEG capture", () => {
     const drawImage = vi.fn();
     vi.stubGlobal("document", { createElement: () => ({ getContext: () => ({ drawImage }), toBlob: (cb: BlobCallback) => { finish = cb; } }) });
     const stop = vi.fn(() => expect(drawImage).toHaveBeenCalledTimes(1));
-    const pending = captureAndStop(video, limits, stop);
+    const pending = captureAndStop(video, "spread", limits, stop);
     expect(stop).toHaveBeenCalledOnce();
     finish(new Blob([bytes]));
     expect((await pending).blob.size).toBe(bytes.length);
@@ -54,7 +54,7 @@ describe("JPEG capture", () => {
 
   test("Submit also stops the camera when the frame is invalid", async () => {
     const stop = vi.fn();
-    await expect(captureAndStop({ ...video, readyState: 0 } as HTMLVideoElement, limits, stop)).rejects.toThrow("not ready");
+    await expect(captureAndStop({ ...video, readyState: 0 } as HTMLVideoElement, "spread", limits, stop)).rejects.toThrow("not ready");
     expect(stop).toHaveBeenCalledOnce();
   });
 
@@ -67,24 +67,31 @@ describe("JPEG capture", () => {
 
   test("rejects non-JPEG bytes even if labelled JPEG, and releases the canvas", async () => {
     const canvases = mockCanvas(() => new Blob(["not JPEG"], { type: "image/jpeg" }), "data:image/png;base64,iVBORw==");
-    await expect(captureFrame(video, limits)).rejects.toThrow("could not encode");
+    await expect(captureFrame(video, "spread", limits)).rejects.toThrow("could not encode");
     expect(canvases[0]).toMatchObject({ width: 0, height: 0 });
   });
 
   test("downsizes the frozen snapshot when lowering quality is insufficient", async () => {
     let calls = 0;
     const canvases = mockCanvas(() => ++calls <= 3 ? new Blob([bytes, new Uint8Array(20)]) : new Blob([bytes]));
-    expect(await captureFrame(video, limits)).toMatchObject({ width: 1020, height: 510 });
+    expect(await captureFrame(video, "spread", limits)).toMatchObject({ width: 1020, height: 657 });
     expect(canvases[0].drawImage).toHaveBeenCalledTimes(1);
-    expect(canvases[1].drawImage).toHaveBeenCalledWith(canvases[0], 0, 0, 1020, 510);
+    expect(canvases[1].drawImage).toHaveBeenCalledWith(canvases[0], 0, 0, 1020, 657);
     expect(canvases.every(canvas => !canvas.width && !canvas.height)).toBe(true);
   });
 });
 
 describe("framing", () => {
-  test("captures the entire visible stream by default and preserves the explicit single-page crop", () => {
-    expect(frameBounds(2000, 1000, "spread")).toEqual({ x: 0, y: 0, width: 2000, height: 1000 });
-    expect(frameBounds(2000, 1000, "single")).toEqual({ x: 400, y: 125, width: 1200, height: 750 });
+  test.each([
+    ["single", 2000, 1000, { x: 619, y: 0, width: 761, height: 1000 }],
+    ["spread", 2000, 1000, { x: 225, y: 0, width: 1550, height: 1000 }],
+    ["single", 1080, 1920, { x: 0, y: 251, width: 1080, height: 1417 }],
+    ["spread", 1080, 1920, { x: 0, y: 612, width: 1080, height: 696 }],
+  ] as const)("centers the %s preview in a %s by %s camera stream", (mode, width, height, bounds) => {
+    expect(frameBounds(width, height, mode)).toEqual(bounds);
+  });
+
+  test("rejects camera input that is not ready", () => {
     expect(() => frameBounds(0, 0, "spread")).toThrow("not ready");
   });
 

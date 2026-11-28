@@ -13,12 +13,23 @@ async function client(cloud = false) {
 test.each([false, true])("only show Earlier captures when recordings exist: %s", async hasLegacy => {
   const { listBooks } = await client();
   const named = { id: "book", name: "Story" };
-  const items = [{ id: "earlier", name: "Earlier captures" }, named];
-  const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ items }))
-    .mockResolvedValueOnce(Response.json({ items: hasLegacy ? [{ id: "old" }] : [] }));
+  const items = [{ id: "earlier", name: "Earlier captures", created_at: hasLegacy ? 1000 : null }, named];
+  const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ items }));
   vi.stubGlobal("fetch", fetcher);
   expect((await listBooks("run", signal)).items).toEqual(hasLegacy ? items : [named]);
-  expect(fetcher.mock.calls[1][0]).toBe("/api/local/readings?book_id=earlier");
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(fetcher.mock.calls[0][0]).toBe("/api/local/books");
+});
+
+test("metadata updates can clear a field without renaming the book", async () => {
+  const { updateBook, createBook } = await client();
+  const book = { id: "book", name: "Story", level: "P3", language: "zh" };
+  const fetcher = vi.fn().mockResolvedValueOnce(Response.json(book)).mockResolvedValueOnce(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetcher);
+  expect(await createBook("run", "Story", signal, { level: "P3", language: "zh" })).toEqual(book);
+  await updateBook("run", "book", { level: null }, signal);
+  expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ name: "Story", level: "P3", language: "zh" });
+  expect(fetcher.mock.calls[1]).toEqual(["/api/local/books/book", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ level: null }), signal })]);
 });
 
 test("history starts with the newest page and preserves opaque cursor characters", async () => {

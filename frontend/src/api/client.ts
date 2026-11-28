@@ -1,7 +1,37 @@
-import type { PlayableCapture, PublicConfig, ReadingJob, RecentCaptures } from "./contracts.generated";
+import type { Book, BookUpdate, HomeworkEntry, HomeworkHistory, HomeworkSubmission, PlayableCapture, PublicConfig, ReadingJob, RecentCaptures } from "./contracts.generated";
 import { apiFetch, authEnabled } from "../auth/session";
 
 const readings = authEnabled ? "/api/readings" : "/api/local/readings";
+const homework = authEnabled ? "/api/homework" : "/api/local/homework";
+
+export async function submitHomework(run: string, upload: HomeworkSubmission, signal: AbortSignal): Promise<HomeworkEntry> {
+  const response = await checked(await apiFetch(homework, {
+    method: "POST", signal, headers: { "X-Reader-Run": run, "Content-Type": "application/json" },
+    body: JSON.stringify(upload),
+  }));
+  return response.json();
+}
+
+export async function homeworkHistory(run: string, signal: AbortSignal, cursor?: string): Promise<HomeworkHistory> {
+  const query = cursor ? `?${new URLSearchParams({ cursor })}` : "";
+  const response = await checked(await apiFetch(homework + query, {
+    signal, cache: "no-store", headers: { "X-Reader-Run": run },
+  }));
+  return response.json();
+}
+
+export async function getHomework(run: string, id: string, signal: AbortSignal): Promise<HomeworkEntry> {
+  const response = await checked(await apiFetch(`${homework}/${encodeURIComponent(id)}`, {
+    signal, cache: "no-store", headers: { "X-Reader-Run": run },
+  }));
+  return response.json();
+}
+
+export async function deleteHomework(run: string, id: string, signal: AbortSignal): Promise<void> {
+  await checked(await apiFetch(`${homework}/${encodeURIComponent(id)}`, {
+    method: "DELETE", signal, headers: { "X-Reader-Run": run },
+  }));
+}
 
 async function checked(response: Response): Promise<Response> {
   if (!response.ok) {
@@ -13,14 +43,12 @@ async function checked(response: Response): Promise<Response> {
   return response;
 }
 
-export type Book = { id: string; name: string; created_at?: number | null; read_count?: number; cover?: { run_id: string; page_id: string; thumbnail_url: string } | null };
+export type { Book } from "./contracts.generated";
 const books = authEnabled ? "/api/books" : "/api/local/books";
 
 export async function listBooks(run: string, signal: AbortSignal): Promise<{items: Book[]}> {
   const library: { items: Book[] } = await (await checked(await apiFetch(books, { signal, cache: "no-store", headers: { "X-Reader-Run": run } }))).json();
-  if (!library.items.some(book => book.id === "earlier")) return library;
-  const legacy = await recentReadings(run, signal, undefined, "earlier");
-  return legacy.items.length ? library : { items: library.items.filter(book => book.id !== "earlier") };
+  return { items: library.items.filter(book => book.id !== "earlier" || book.created_at != null) };
 }
 
 export async function recordCompletedRead(run: string, bookId: string, completionId: string): Promise<{ read_count: number }> {
@@ -38,9 +66,9 @@ export async function setBookCover(run: string, bookId: string, page: Pick<Playa
   }))).json();
 }
 
-export async function renameBook(run: string, bookId: string, name: string, signal: AbortSignal): Promise<void> {
+export async function updateBook(run: string, bookId: string, changes: BookUpdate, signal: AbortSignal): Promise<void> {
   await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}`, {
-    method: "PATCH", signal, headers: { "Content-Type": "application/json", "X-Reader-Run": run }, body: JSON.stringify({ name }),
+    method: "PATCH", signal, headers: { "Content-Type": "application/json", "X-Reader-Run": run }, body: JSON.stringify(changes),
   }));
 }
 
@@ -48,8 +76,8 @@ export async function deleteBook(run: string, bookId: string, signal: AbortSigna
   await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}`, { method: "DELETE", signal, headers: { "X-Reader-Run": run } }));
 }
 
-export async function createBook(run: string, name: string, signal: AbortSignal): Promise<Book> {
-  return (await checked(await apiFetch(books, { method: "POST", signal, body: JSON.stringify({name}), headers: { "Content-Type": "application/json", "X-Reader-Run": run } }))).json();
+export async function createBook(run: string, name: string, signal: AbortSignal, metadata: Pick<Book, "level" | "language"> = {}): Promise<Book> {
+  return (await checked(await apiFetch(books, { method: "POST", signal, body: JSON.stringify({ name, ...metadata }), headers: { "Content-Type": "application/json", "X-Reader-Run": run } }))).json();
 }
 
 export async function submitReading(run: string, id: string, image: Blob, mode: string, signal: AbortSignal, bookId: string): Promise<ReadingJob> {
@@ -141,7 +169,7 @@ export async function getConfig(signal: AbortSignal): Promise<PublicConfig> {
   const response = await apiFetch("/api/config", { signal, cache: "no-store" });
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new Error("Sign-in is required. The local prototype does not include Cognito login yet.");
+      throw new Error("Your account could not access the reader. Sign in again or check the deployed Cognito permissions.");
     }
     throw new Error(`The reader service is unavailable (${response.status}). Try again.`);
   }

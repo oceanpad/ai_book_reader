@@ -1,13 +1,73 @@
 const domain = import.meta.env.VITE_COGNITO_DOMAIN ?? "";
 const clientId = import.meta.env.VITE_COGNITO_CLIENT_ID ?? "";
+const region = import.meta.env.VITE_COGNITO_REGION ?? "";
 export const authEnabled = Boolean(domain && clientId);
 const tokenKey = "reader.auth.tokens";
 const flowKey = "reader.auth.pkce";
 const changed = "reader-auth-changed";
-const manualLoginKey = "reader.auth.manual-login";
 
 type Tokens = { accessToken: string; expiresAt: number };
 type Flow = { state: string; verifier: string; created: number };
+export type PasswordChallenge = { session: string; username: string };
+
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function saveTokens(token: string, expiresIn: number) {
+  if (!token || !Number.isFinite(expiresIn) || expiresIn <= 15) throw new Error("The sign-in service returned an invalid token response.");
+  sessionStorage.setItem(tokenKey, JSON.stringify({ accessToken: token, expiresAt: Date.now() + expiresIn * 1000 } satisfies Tokens));
+  if (location.pathname === "/login") history.replaceState(null, "", "/");
+  window.dispatchEvent(new Event(changed));
+}
+
+async function passwordRequest(action: string, body: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>> {
+  if (!/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(region)) throw new Error("Sign-in is not configured. Redeploy with the Cognito region setting.");
+  const response = await fetch(`https://cognito-idp.${region}.amazonaws.com/`, {
+    method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]), credentials: "omit", referrerPolicy: "no-referrer",
+    headers: { "Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": `AWSCognitoIdentityProviderService.${action}` },
+    body: JSON.stringify({ ClientId: clientId, ...body }),
+  });
+  const result: unknown = await response.json();
+  signal.throwIfAborted();
+  if (!response.ok) {
+    const code = object(result) && typeof result.__type === "string" ? result.__type.split("#").pop() : "";
+    if (code === "NotAuthorizedException" || code === "UserNotFoundException") throw new Error("Incorrect username or password. Try again.");
+    if (code === "InvalidPasswordException") throw new Error("Use at least 12 characters with uppercase and lowercase letters, a number, and a symbol.");
+    if (code === "TooManyRequestsException" || code === "LimitExceededException") throw new Error("Too many sign-in attempts. Wait a moment and try again.");
+    if (code === "PasswordResetRequiredException" || code === "UserNotConfirmedException") throw new Error("This account needs recovery or confirmation. Select Account help to continue.");
+    throw new Error("Could not sign in. Try again or select Account help.");
+  }
+  if (!object(result)) throw new Error("The sign-in service returned an invalid response.");
+  return result;
+}
+
+function passwordResult(result: Record<string, unknown>, username: string): PasswordChallenge | null {
+  const tokens = result.AuthenticationResult;
+  if (object(tokens) && typeof tokens.AccessToken === "string" && typeof tokens.ExpiresIn === "number") {
+    saveTokens(tokens.AccessToken, tokens.ExpiresIn);
+    return null;
+  }
+  if (result.ChallengeName === "NEW_PASSWORD_REQUIRED" && typeof result.Session === "string") {
+    const params = result.ChallengeParameters;
+    return { session: result.Session, username: object(params) && typeof params.USER_ID_FOR_SRP === "string" ? params.USER_ID_FOR_SRP : username };
+  }
+  throw new Error("This account needs an additional sign-in step. Select Account help to continue.");
+}
+
+export async function signInWithPassword(username: string, password: string, signal: AbortSignal): Promise<PasswordChallenge | null> {
+  return passwordResult(await passwordRequest("InitiateAuth", {
+    AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: username, PASSWORD: password },
+  }, signal), username);
+}
+
+export async function finishNewPassword(challenge: PasswordChallenge, password: string, signal: AbortSignal): Promise<void> {
+  const result = await passwordRequest("RespondToAuthChallenge", {
+    ChallengeName: "NEW_PASSWORD_REQUIRED", Session: challenge.session,
+    ChallengeResponses: { USERNAME: challenge.username, NEW_PASSWORD: password },
+  }, signal);
+  if (passwordResult(result, challenge.username)) throw new Error("Password setup is incomplete. Select Account help to continue.");
+}
 
 function read<T>(key: string): T | null {
   const value = sessionStorage.getItem(key);
@@ -56,29 +116,21 @@ export function finishSignIn(): Promise<void> {
     if (!response.ok) throw new Error("The sign-in code could not be exchanged. Sign in again.");
     const result: unknown = await response.json();
     if (!result || typeof result !== "object" || !("access_token" in result) || typeof result.access_token !== "string" || !("expires_in" in result) || typeof result.expires_in !== "number") throw new Error("The sign-in service returned an invalid token response.");
-    sessionStorage.setItem(tokenKey, JSON.stringify({ accessToken: result.access_token, expiresAt: Date.now() + result.expires_in * 1000 } satisfies Tokens));
+    saveTokens(result.access_token, result.expires_in);
   })();
   return exchange;
 }
 
 let startup: Promise<void> | null = null;
 export function restoreSignIn(): Promise<void> {
-  // StrictMode can mount the gate twice. Both mounts must share the same PKCE flow.
+  // StrictMode can mount the gate twice. Both mounts must share the same callback.
   return startup ??= (async () => {
     if (location.pathname === "/auth/callback") await finishSignIn();
-    if (accessToken()) {
-      sessionStorage.removeItem(manualLoginKey);
-      if (location.pathname === "/login") history.replaceState(null, "", "/");
-    } else if (!sessionStorage.getItem(manualLoginKey)) {
-      // Cognito checks its own SSO cookie; only it can decide whether a prompt is needed.
-      sessionStorage.setItem(manualLoginKey, "1");
-      await signIn();
-    }
+    if (accessToken() && location.pathname === "/login") history.replaceState(null, "", "/");
   })();
 }
 
 export function signOut() {
-  sessionStorage.setItem(manualLoginKey, "1");
   expireLogin();
   const url = new URL("/logout", domain);
   url.search = new URLSearchParams({ client_id: clientId, logout_uri: location.origin + "/" }).toString();

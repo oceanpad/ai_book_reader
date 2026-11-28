@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
@@ -15,18 +16,36 @@ from backend.contracts import (
     BookCoverRequest,
     BookCreate,
     Books,
+    BookUpdate,
     CaptureState,
     Health,
+    HomeworkEntry,
+    HomeworkHistory,
     NarrationEdit,
     PublicConfig,
     ReadCount,
     ReadingJob,
     RecentCaptures,
 )
+from backend.homework import CloudHomework, LocalHomework, read_submission
 from backend.local_reader import LocalError, LocalReader
 from backend.providers import Providers
 
 RunId = Annotated[UUID, Header(alias="X-Reader-Run")]
+
+
+def has_scope(jwt: dict[str, object], scope: str) -> bool:
+    # API Gateway verifies the same pool issuer and browser client for both token flows.
+    scopes = jwt.get("scopes", [])
+    claims = jwt.get("claims", {})
+    return isinstance(scopes, list) and (
+        scope in scopes
+        or (
+            "aws.cognito.signin.user.admin" in scopes
+            and isinstance(claims, dict)
+            and claims.get("token_use") == "access"
+        )
+    )
 
 
 def create_app(
@@ -61,7 +80,7 @@ def create_app(
         owner = jwt.get("claims", {}).get("sub")
         if not owner:
             raise HTTPException(status_code=401, detail="Sign in to read this capture.")
-        if scope not in jwt.get("scopes", []):
+        if not has_scope(jwt, scope):
             raise HTTPException(
                 status_code=403, detail="This account is missing the required reading scope."
             )
@@ -112,11 +131,32 @@ def create_app(
                 .get("authorizer", {})
                 .get("jwt", {})
             )
-            if not jwt.get("claims", {}).get("sub") or "reader/read" not in jwt.get("scopes", []):
+            if not jwt.get("claims", {}).get("sub") or not has_scope(jwt, "reader/read"):
                 raise HTTPException(status_code=401, detail="Sign in with the reader/read scope")
         return config.public_config()
 
     if config.mode == "local":
+        homework = LocalHomework(reader)
+
+        @app.post("/api/local/homework", status_code=202)
+        async def local_submit_homework(request: Request, x_reader_run: RunId) -> HomeworkEntry:
+            entry, images = await read_submission(request)
+            return await homework.submit(str(x_reader_run), entry, images)
+
+        @app.get("/api/local/homework")
+        def local_homework_history(
+            x_reader_run: RunId, cursor: str | None = None
+        ) -> HomeworkHistory:
+            return homework.history(str(x_reader_run), cursor)
+
+        @app.get("/api/local/homework/{entry_id}")
+        def local_get_homework(entry_id: str, x_reader_run: RunId) -> HomeworkEntry:
+            return homework.get(str(x_reader_run), entry_id)
+
+        @app.delete("/api/local/homework/{entry_id}", status_code=204)
+        def local_delete_homework(entry_id: str, x_reader_run: RunId) -> Response:
+            homework.delete(str(x_reader_run), entry_id)
+            return Response(status_code=204)
 
         @app.get("/api/local/books", response_model_exclude_none=True)
         async def local_books(x_reader_run: RunId) -> Books:
@@ -124,7 +164,9 @@ def create_app(
 
         @app.post("/api/local/books", status_code=201, response_model_exclude_none=True)
         def local_create_book(x_reader_run: RunId, body: BookCreate) -> Book:
-            return reader.create_book(str(x_reader_run), body.name)
+            return reader.create_book(
+                str(x_reader_run), body.name, level=body.level, language=body.language
+            )
 
         @app.post("/api/local/books/{book_id}/completions")
         def local_completion(book_id: str, x_reader_run: RunId, body: BookCompletion) -> ReadCount:
@@ -136,8 +178,8 @@ def create_app(
             return reader.set_cover(str(x_reader_run), book_id, str(body.run_id), str(body.page_id))
 
         @app.patch("/api/local/books/{book_id}", status_code=204)
-        def local_rename_book(book_id: str, x_reader_run: RunId, body: BookCreate) -> Response:
-            reader.rename_book(str(x_reader_run), book_id, body.name)
+        def local_update_book(book_id: str, x_reader_run: RunId, body: BookUpdate) -> Response:
+            reader.update_book(str(x_reader_run), book_id, body)
             return Response(status_code=204)
 
         @app.delete("/api/local/books/{book_id}", status_code=204)
@@ -210,6 +252,28 @@ def create_app(
 
     else:
 
+        @app.post("/api/homework", status_code=202)
+        async def cloud_submit_homework(request: Request) -> HomeworkEntry:
+            store, owner = cloud(request, "reader/write")
+            entry, images = await read_submission(request)
+            return await asyncio.to_thread(CloudHomework(store).submit, owner, entry, images)
+
+        @app.get("/api/homework")
+        def cloud_homework_history(request: Request, cursor: str | None = None) -> HomeworkHistory:
+            store, owner = cloud(request, "reader/read")
+            return CloudHomework(store).history(owner, cursor)
+
+        @app.get("/api/homework/{entry_id}")
+        def cloud_get_homework(entry_id: str, request: Request) -> HomeworkEntry:
+            store, owner = cloud(request, "reader/read")
+            return CloudHomework(store).get(owner, entry_id)
+
+        @app.delete("/api/homework/{entry_id}", status_code=204)
+        def cloud_delete_homework(entry_id: str, request: Request) -> Response:
+            store, owner = cloud(request, "reader/write")
+            CloudHomework(store).delete(owner, entry_id)
+            return Response(status_code=204)
+
         @app.get("/api/books", response_model_exclude_none=True)
         def cloud_books(request: Request) -> Books:
             store, owner = cloud(request, "reader/read")
@@ -218,7 +282,7 @@ def create_app(
         @app.post("/api/books", status_code=201, response_model_exclude_none=True)
         def cloud_create_book(request: Request, body: BookCreate) -> Book:
             store, owner = cloud(request, "reader/write")
-            return store.create_book(owner, body.name)
+            return store.create_book(owner, body.name, level=body.level, language=body.language)
 
         @app.post("/api/books/{book_id}/completions")
         def cloud_completion(book_id: str, request: Request, body: BookCompletion) -> ReadCount:
@@ -235,9 +299,9 @@ def create_app(
             return store.set_cover(owner, book_id, str(body.run_id), str(body.page_id))
 
         @app.patch("/api/books/{book_id}", status_code=204)
-        def cloud_rename_book(book_id: str, request: Request, body: BookCreate) -> Response:
+        def cloud_update_book(book_id: str, request: Request, body: BookUpdate) -> Response:
             store, owner = cloud(request, "reader/write")
-            store.rename_book(owner, book_id, body.name)
+            store.update_book(owner, book_id, body)
             return Response(status_code=204)
 
         @app.delete("/api/books/{book_id}", status_code=204)

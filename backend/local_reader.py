@@ -23,7 +23,10 @@ from backend.contracts import (
     RECENT_CAPTURE_LIMIT,
     Book,
     BookCover,
+    BookLanguage,
+    BookLevel,
     Books,
+    BookUpdate,
     CaptureStage,
     CaptureState,
     PlayableCapture,
@@ -111,13 +114,19 @@ class LocalReader:
         with closing(sqlite3.connect(path)) as db, db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS books "
-                "(owner TEXT, id TEXT, name TEXT NOT NULL, created_at INTEGER, PRIMARY KEY(owner, id))"
+                "(owner TEXT, id TEXT, name TEXT NOT NULL, created_at INTEGER, "
+                "level TEXT, language TEXT, "
+                "PRIMARY KEY(owner, id))"
             )
-            if not db.execute("SELECT 1 FROM pragma_table_info('books') WHERE name='created_at'").fetchone():
+            columns = {"created_at": "INTEGER", "level": "TEXT", "language": "TEXT"}
+            existing = {row[1] for row in db.execute("PRAGMA table_info(books)")}
+            if not columns.keys() <= existing:
                 db.execute("BEGIN IMMEDIATE")
                 # A concurrent request may have migrated the database while we waited.
-                if not db.execute("SELECT 1 FROM pragma_table_info('books') WHERE name='created_at'").fetchone():
-                    db.execute("ALTER TABLE books ADD COLUMN created_at INTEGER")
+                existing = {row[1] for row in db.execute("PRAGMA table_info(books)")}
+                for column, kind in columns.items():
+                    if column not in existing:
+                        db.execute(f"ALTER TABLE books ADD COLUMN {column} {kind}")
                 db.commit()
             db.execute(
                 "CREATE TABLE IF NOT EXISTS book_covers "
@@ -162,17 +171,25 @@ class LocalReader:
             counts = dict(
                 db.execute("SELECT book_id, reads FROM book_counts WHERE owner=?", (owner,))
             )
-            rows = db.execute("SELECT id, name, created_at FROM books WHERE owner=? ORDER BY id", (owner,))
+            rows = db.execute(
+                "SELECT id, name, created_at, level, language FROM books WHERE owner=? ORDER BY id",
+                (owner,),
+            )
             return Books(
                 items=[
                     Book(
                         id=i,
                         name=n,
+                        level=level,
+                        language=language,
                         created_at=created_at if created_at is not None else earliest.get(i),
                         read_count=counts.get(i),
                         cover=self._cover(owner, i, covers[i]) if i in covers else None,
                     )
-                    for i, n, created_at in [(EARLIER.id, EARLIER.name, None), *rows]
+                    for i, n, created_at, level, language in [
+                        (EARLIER.id, EARLIER.name, None, None, None),
+                        *rows,
+                    ]
                 ]
             )
 
@@ -184,13 +201,15 @@ class LocalReader:
         with self.book_db() as db:
             name = EARLIER.name
             created_at = None
+            level = language = None
             if book_id != EARLIER.id:
                 row = db.execute(
-                    "SELECT name, created_at FROM books WHERE owner=? AND id=?", (owner, book_id)
+                    "SELECT name, created_at, level, language FROM books WHERE owner=? AND id=?",
+                    (owner, book_id),
                 ).fetchone()
                 if row is None:
                     raise LocalError("Book not found.", 404)
-                name, created_at = row
+                name, created_at, level, language = row
             db.execute(
                 "INSERT OR REPLACE INTO book_covers(owner, book_id, page_id) VALUES(?, ?, ?)",
                 (owner, book_id, page_id),
@@ -199,8 +218,15 @@ class LocalReader:
                 "SELECT reads FROM book_counts WHERE owner=? AND book_id=?", (owner, book_id)
             ).fetchone()
         return Book(
-            id=book_id, name=name, cover=cover, read_count=count[0] if count else None,
-            created_at=created_at if created_at is not None else self._earliest_pages(owner).get(book_id),
+            id=book_id,
+            name=name,
+            level=level,
+            language=language,
+            cover=cover,
+            read_count=count[0] if count else None,
+            created_at=created_at
+            if created_at is not None
+            else self._earliest_pages(owner).get(book_id),
         )
 
     def complete_book(self, owner: str, book_id: str, completion_id: str) -> int:
@@ -228,21 +254,38 @@ class LocalReader:
                 ).fetchone()[0]
             )
 
-    def create_book(self, owner: str, name: str) -> Book:
-        book = Book(id=str(uuid4()), name=name, created_at=time.time_ns() // 1_000_000)
+    def create_book(
+        self,
+        owner: str,
+        name: str,
+        *,
+        level: BookLevel | None = None,
+        language: BookLanguage | None = None,
+    ) -> Book:
+        book = Book(
+            id=str(uuid4()),
+            name=name,
+            level=level,
+            language=language,
+            created_at=time.time_ns() // 1_000_000,
+        )
         with self.book_db() as db:
             db.execute(
-                "INSERT INTO books(owner, id, name, created_at) VALUES(?, ?, ?, ?)",
-                (owner, book.id, book.name, book.created_at),
+                "INSERT INTO books(owner, id, name, created_at, level, language) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (owner, book.id, book.name, book.created_at, book.level, book.language),
             )
         return book
 
-    def rename_book(self, owner: str, book_id: str, name: str) -> None:
+    def update_book(self, owner: str, book_id: str, changes: BookUpdate) -> None:
         if book_id == EARLIER.id:
-            raise LocalError("Earlier captures cannot be renamed.", 409)
+            raise LocalError("Earlier captures cannot be edited as a book.", 409)
+        values = changes.model_dump(mode="json", exclude_unset=True)
+        assignments = ", ".join(f"{column}=?" for column in values)
         with self.book_db() as db:
             if not db.execute(
-                "UPDATE books SET name=? WHERE owner=? AND id=?", (name, owner, book_id)
+                f"UPDATE books SET {assignments} WHERE owner=? AND id=?",
+                (*values.values(), owner, book_id),
             ).rowcount:
                 raise LocalError("Book not found.", 404)
 

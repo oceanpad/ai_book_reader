@@ -12,6 +12,7 @@ from pydantic import BaseModel, SecretStr, ValidationError
 from backend.cloud import CloudStore, LostLease
 from backend.config import Settings
 from backend.contracts import VisionResult
+from backend.homework import CloudHomework
 from backend.local_reader import LocalError, validate_image
 from backend.providers import ProviderError, Providers, speech_chunks
 from backend.vision_images import capture_thumbnail
@@ -218,7 +219,11 @@ async def batch(event: dict[str, Any]) -> dict[str, Any]:
         providers = Providers(provider_settings(settings), client)
         for record in event.get("Records", []):
             try:
-                await process(store, json.loads(record["body"]), providers)
+                message = json.loads(record["body"])
+                if message.get("kind") == "homework":
+                    await CloudHomework(store).process(message, providers)
+                else:
+                    await process(store, message, providers)
             except LostLease:
                 logger.info("reading_fenced message=%s", record["messageId"])
             except (ClientError, OSError, ValueError, KeyError) as exc:

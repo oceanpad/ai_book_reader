@@ -87,6 +87,8 @@ def bootstrap(session: boto3.Session, outputs: dict[str, Any], email: str) -> Pa
 
 
 def publish(session: boto3.Session, outputs: dict[str, Any], env: dict[str, str]) -> None:
+    if not session.region_name:
+        raise RuntimeError("Select an AWS region before publishing the frontend")
     auth = outputs["ReaderAuthStack"]
     build_env = {
         name: value
@@ -94,7 +96,9 @@ def publish(session: boto3.Session, outputs: dict[str, Any], env: dict[str, str]
         if "OPENAI" not in name and "OPENROUTER" not in name
     }
     build_env.update(
-        VITE_COGNITO_DOMAIN=auth["CognitoDomain"], VITE_COGNITO_CLIENT_ID=auth["UserPoolClientId"]
+        VITE_COGNITO_DOMAIN=auth["CognitoDomain"],
+        VITE_COGNITO_CLIENT_ID=auth["UserPoolClientId"],
+        VITE_COGNITO_REGION=session.region_name,
     )
     command(["npm", "run", "build"], build_env)
     s3 = session.client("s3")

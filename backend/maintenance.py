@@ -7,6 +7,7 @@ from botocore.exceptions import ClientError
 
 from backend.cloud import CloudStore, conditional, timestamp
 from backend.config import Settings
+from backend.homework import CloudHomework
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ def maintain(store: CloudStore) -> None:
             if "LastEvaluatedKey" not in response:
                 break
             start = {"ExclusiveStartKey": response["LastEvaluatedKey"]}
+    CloudHomework(store).maintain()
 
 
 def handler(event: dict[str, Any], context: Any) -> None:

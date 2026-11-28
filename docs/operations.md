@@ -23,7 +23,7 @@ The account has a total Lambda concurrency limit of 10. New page jobs use one FI
 
 Provider keys are stored in one Secrets Manager secret referenced by `ProviderSecretArn`. Only the worker role has `GetSecretValue`; API/browser/dispatcher/maintenance do not. To rotate, update the ignored local provider configuration and rerun the reviewed deployment with `--execute`; the bootstrap SDK overwrites the secret without putting values in arguments or outputs. Workers read it for each SQS invocation, so no secret cache flush is required. Revoke the old provider key after a synthetic read confirms the new key works.
 
-For the adult account, use Cognito managed login's password recovery. If first login was never completed and the local temporary password is lost, use an explicitly authorized Cognito administrator recovery/reset; redeploy does **not** silently overwrite an existing password. Do not paste passwords or tokens into chat, issues, terminal logs, or committed files.
+For the adult account, select **Account help** on the inline sign-in form to open Cognito managed login's password recovery. If first login was never completed and the local temporary password is lost, use an explicitly authorized Cognito administrator recovery/reset; redeploy does **not** silently overwrite an existing password. Do not paste passwords or tokens into chat, issues, terminal logs, or committed files.
 
 Access tokens expire; the app returns to Sign In rather than continuing paid requests with expired credentials. Sign Out clears tab credentials and ends managed login. Reloading loses the current capture/run reference; signed-in history is available after reload; unfinished work expires automatically.
 
@@ -36,6 +36,8 @@ Access tokens expire; the app returns to Sign In rather than continuing paid req
 - Do not manually rewrite job state/lease tokens in DynamoDB or blindly redrive DLQs. Inspect job IDs, attempt, stage, soft expiry, quota and alarms first. Invoke the maintenance Lambda from the console to run the existing repair path, or use the UI's explicit retry for a recoverable failed page.
 
 SQS visibility is 60 minutes, six times the ten-minute worker timeout. Provider operations have a wall-time bound, and the worker renews its two-minute fenced lease at checkpoints. The scheduled maintenance repair interval is five minutes, so infrastructure recovery is not instantaneous.
+
+Homework checks use the same dispatcher and worker, with a separate FIFO group per account so they do not queue behind book narration. Homework has a separate daily counter with the same configured limit as book captures. Maintenance re-dispatches pending checks older than five minutes and marks checks still pending after 20 minutes as failed. Worksheet photos are deleted after processing, with the existing `incoming/` one-day lifecycle as a fallback. Results stay in account history until deleted; before removing an account, delete its homework history too.
 
 ## Discard, expiry and deletion
 

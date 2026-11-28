@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import time
 from io import BytesIO
@@ -16,11 +17,13 @@ from PIL import Image
 from backend.api import create_app
 from backend.cloud import CloudStore, LostLease
 from backend.config import Settings
-from backend.contracts import Limits
+from backend.contracts import BookLanguage, BookLevel, BookUpdate, HomeworkResult, Limits
+from backend.dispatcher import handler as dispatch
+from backend.homework import CloudHomework
 from backend.local_reader import LocalError
 from backend.maintenance import maintain
 from backend.providers import Providers
-from backend.worker import process
+from backend.worker import batch, process
 
 
 @pytest.fixture
@@ -675,6 +678,149 @@ def test_book_history_pages_stably_across_equal_seconds_and_scopes(store):
     assert not store.recent("owner", book_id=empty.id).items
 
 
+def test_legacy_book_dates_use_oldest_visible_page_in_each_scope(store, monkeypatch):
+    owner = "owner"
+    for book_id in ("legacy", "undated"):
+        store.table.put_item(Item={"PK": "USER#owner", "SK": f"BOOK#{book_id}", "name": book_id})
+
+    def page(second, *, who=owner, named=False, **extra):
+        store.table.put_item(
+            Item={
+                **store.key(who, "run", str(second)),
+                "owner": who,
+                "createdAt": second,
+                "state": "READY",
+                **({"bookId": "legacy", "ownerBook": f"{who}#legacy"} if named else {}),
+                **extra,
+            }
+        )
+
+    page(1, who="other")
+    page(2, who="other", named=True)
+    page(3, state="CANCELLED")
+    for second in range(4, 16):
+        page(second, named=True, softExpires=1)
+    page(30, named=True)
+    page(20, named=True)
+    page(40)
+    page(50, bookId="earlier")
+    queries = []
+    query = store.table.query
+
+    def record(**kwargs):
+        queries.append(kwargs.get("IndexName"))
+        return query(**kwargs)
+
+    monkeypatch.setattr(store.table, "query", record)
+    assert {b.id: b.created_at for b in store.books(owner).items} == {
+        "earlier": 40_000,
+        "legacy": 20_000,
+        "undated": None,
+    }
+    assert "BookCapturesIndex" in queries
+    assert "OwnerCapturesIndex" in queries
+    store.complete_book(owner, "earlier", str(uuid4()))
+    assert store.books(owner).items[0].created_at == 40_000
+
+
+def test_cloud_book_metadata_stays_unset_until_edited_and_survives_renaming(store):
+    store.table.put_item(Item={"PK": "USER#owner", "SK": "BOOK#old", "name": "Old book"})
+    legacy = next(book for book in store.books("owner").items if book.id == "old")
+    assert legacy.level is None and legacy.language is None
+    book = store.create_book("owner", "Story", level=BookLevel.P1, language=BookLanguage.ENGLISH)
+    fresh = CloudStore(store.settings)
+    fresh.update_book(
+        "owner", book.id, BookUpdate(level=BookLevel.P6, language=BookLanguage.CHINESE)
+    )
+    fresh.update_book("owner", book.id, BookUpdate(name="Renamed"))
+    saved = next(item for item in fresh.books("owner").items if item.id == book.id)
+    assert (saved.name, saved.level, saved.language) == ("Renamed", "P6", "zh")
+    with pytest.raises(LocalError, match="Book not found"):
+        fresh.update_book("other", book.id, BookUpdate(level=BookLevel.P2))
+    fresh.update_book("owner", book.id, BookUpdate(level=None, language=None))
+    row = fresh.table.get_item(Key={"PK": "USER#owner", "SK": f"BOOK#{book.id}"})["Item"]
+    assert "level" not in row and "language" not in row
+    assert row["name"] == "Renamed" and row["createdAtMs"] == book.created_at
+
+
+def test_history_batches_current_records_without_losing_index_order(store, monkeypatch):
+    for i in range(24):
+        store.table.put_item(
+            Item={
+                **store.key("owner", "run", str(i)),
+                "owner": "owner",
+                "run": "run",
+                "id": str(i),
+                "createdAt": i + 1,
+                "state": "READY",
+                "audioKeys": ["audio.wav"],
+            }
+        )
+    calls = []
+    batch_get = store.table.meta.client.batch_get_item
+
+    def reversed_batch(**kwargs):
+        calls.append(kwargs)
+        result = batch_get(**kwargs)
+        result["Responses"][store.settings.table_name].reverse()
+        return result
+
+    def no_individual_reads(**kwargs):
+        pytest.fail("History must not fetch each capture individually")
+
+    monkeypatch.setattr(store.table.meta.client, "batch_get_item", reversed_batch)
+    monkeypatch.setattr(store.table, "get_item", no_individual_reads)
+    page = store.recent("owner")
+    assert [item.id for item in page.items] == [str(i) for i in range(23, 13, -1)]
+    assert page.next_cursor is not None
+    assert len(calls) == 2
+    assert all(call["RequestItems"][store.settings.table_name]["ConsistentRead"] for call in calls)
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_history_retries_unprocessed_records_or_reports_failure(store, monkeypatch, exhausted):
+    for i in range(2):
+        store.table.put_item(
+            Item={
+                **store.key("owner", "run", f"page-{i}"),
+                "owner": "owner",
+                "run": "run",
+                "id": f"page-{i}",
+                "createdAt": i + 1,
+                "state": "READY",
+                "audioKeys": ["audio.wav"],
+            }
+        )
+    batch_get = store.table.meta.client.batch_get_item
+    calls = 0
+
+    def throttled(**kwargs):
+        nonlocal calls
+        calls += 1
+        if exhausted:
+            return {"Responses": {}, "UnprocessedKeys": kwargs["RequestItems"]}
+        result = batch_get(**kwargs)
+        if calls == 1:
+            row = result["Responses"][store.settings.table_name].pop()
+            result["UnprocessedKeys"] = {
+                store.settings.table_name: {
+                    "Keys": [{"PK": row["PK"], "SK": row["SK"]}],
+                    "ConsistentRead": True,
+                }
+            }
+        return result
+
+    monkeypatch.setattr(store.table.meta.client, "batch_get_item", throttled)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    if exhausted:
+        with pytest.raises(LocalError, match="history is busy") as error:
+            store.recent("owner")
+        assert error.value.status == 503 and calls == 5
+    else:
+        assert [item.id for item in store.recent("owner").items] == ["page-1", "page-0"]
+        assert calls == 2
+
+
 def test_cloud_earlier_completion_interleaved_with_another_reader(store, monkeypatch):
     first, second = str(uuid4()), str(uuid4())
     transact = store.ddb.transact_write_items
@@ -810,7 +956,7 @@ def test_delete_book_fences_new_capture_between_book_check_and_transaction(store
     assert not store.s3.list_objects_v2(Bucket=store.settings.media_bucket).get("Contents")
 
 
-def test_cloud_routes_derive_owner_from_gateway_claims_and_check_scopes(store):
+def test_cloud_routes_derive_owner_from_gateway_claims_and_check_scopes(store, monkeypatch):
     app = create_app(store.settings)
 
     @app.middleware("http")
@@ -819,7 +965,10 @@ def test_cloud_routes_derive_owner_from_gateway_claims_and_check_scopes(store):
             "requestContext": {
                 "authorizer": {
                     "jwt": {
-                        "claims": {"sub": request.headers.get("X-Test-Owner", "")},
+                        "claims": {
+                            "sub": request.headers.get("X-Test-Owner", ""),
+                            "token_use": request.headers.get("X-Test-Token-Use", "access"),
+                        },
                         "scopes": request.headers.get(
                             "X-Test-Scope", "reader/read reader/write"
                         ).split(),
@@ -846,13 +995,33 @@ def test_cloud_routes_derive_owner_from_gateway_claims_and_check_scopes(store):
             == 403
         )
         assert client.post(books, headers=auth, json={"name": " "}).status_code == 422
-        created = client.post(books, headers=auth, json={"name": " A "})
+        with monkeypatch.context() as patch:
+            patch.setattr(time, "time_ns", lambda: 1_700_000_000_123_456_789)
+            created = client.post(books, headers=auth, json={"name": " A "})
         assert created.status_code == 201
         book = created.json()
-        assert book == {"id": book["id"], "name": "A"}
+        assert book == {"id": book["id"], "name": "A", "created_at": 1_700_000_000_123}
         earlier = {"id": "earlier", "name": "Earlier captures"}
         assert client.get(books, headers=auth).json() == {"items": [earlier, book]}
         assert client.get(books, headers={"X-Test-Owner": "owner-b"}).json() == {"items": [earlier]}
+        password_auth = {**auth, "X-Test-Scope": "aws.cognito.signin.user.admin"}
+        assert client.get(books, headers=password_auth).status_code == 200
+        assert (
+            client.patch(
+                f"{books}/{book['id']}", headers=password_auth, json={"level": "P2"}
+            ).status_code
+            == 204
+        )
+        assert (
+            client.patch(
+                f"{books}/{book['id']}", headers=password_auth, json={"level": None}
+            ).status_code
+            == 204
+        )
+        assert (
+            client.get(books, headers={**password_auth, "X-Test-Token-Use": "id"}).status_code
+            == 403
+        )
         target = f"{books}/{book['id']}"
         completions = target + "/completions"
         body = {"completion_id": str(uuid4())}
@@ -986,3 +1155,92 @@ def test_cloud_routes_derive_owner_from_gateway_claims_and_check_scopes(store):
         assert not any(str(r["SK"]).startswith("COMPLETION#") for r in store.table.scan()["Items"])
         assert client.get(books, headers=auth).json() == {"items": [earlier]}
         assert client.get(path, headers=headers).status_code == 404
+
+
+def test_homework_uses_existing_dispatcher_and_worker_and_cleans_upload(store, monkeypatch):
+    queue = store.sqs.create_queue(
+        QueueName="homework-test.fifo",
+        Attributes={"FifoQueue": "true", "ContentBasedDeduplication": "true"},
+    )["QueueUrl"]
+    settings = store.settings.model_copy(update={"queue_url": queue})
+    store.settings = settings
+    monkeypatch.setattr("backend.dispatcher.Settings", lambda: settings)
+    monkeypatch.setattr("backend.worker.Settings", lambda: settings)
+    monkeypatch.setattr("backend.worker.provider_settings", lambda settings: settings)
+    calls = []
+
+    async def answer(self, images, subject, level):
+        calls.append((len(images), subject, level))
+        return HomeworkResult.model_validate(
+            {
+                "questions": [
+                    {
+                        "question": "2 + 1?",
+                        "answer": "3",
+                        "steps": ["Start at 2 and count one more."],
+                        "language": "en",
+                    }
+                ],
+                "note": "",
+            }
+        )
+
+    monkeypatch.setattr(Providers, "check_homework", answer)
+    app = create_app(settings)
+
+    @app.middleware("http")
+    async def fake_gateway(request, call_next):
+        request.scope["aws.event"] = {
+            "requestContext": {
+                "authorizer": {
+                    "jwt": {
+                        "claims": {"sub": request.headers.get("X-Test-Owner")},
+                        "scopes": request.headers.get(
+                            "X-Test-Scope", "reader/read reader/write"
+                        ).split(),
+                    }
+                }
+            }
+        }
+        return await call_next(request)
+
+    with TestClient(app) as client:
+        endpoint = "/api/homework"
+        auth = {"X-Test-Owner": "parent-a"}
+        other = {"X-Test-Owner": "parent-b"}
+        body = {
+            "subject": "math",
+            "level": "kindergarten",
+            "images": [base64.b64encode(image()).decode()],
+        }
+        assert client.post(endpoint, json=body).status_code == 401
+        assert (
+            client.post(
+                endpoint, headers={**auth, "X-Test-Scope": "reader/read"}, json=body
+            ).status_code
+            == 403
+        )
+        response = client.post(endpoint, headers=auth, json=body)
+        assert response.status_code == 202
+        pending = response.json()
+        assert pending["state"] == "pending"
+        assert not calls
+        resource = f"{endpoint}/{pending['id']}"
+        assert client.get(resource, headers=other).status_code == 404
+        assert client.delete(resource, headers=auth).status_code == 409
+        item = CloudHomework(store).raw("parent-a", pending["id"])
+        event = {
+            "Records": [{"dynamodb": {"NewImage": store.encoded(item), "SequenceNumber": "1"}}]
+        }
+        assert dispatch(event, None) == {"batchItemFailures": []}
+        [queued] = store.sqs.receive_message(QueueUrl=queue)["Messages"]
+        delivery = {"Records": [{"body": queued["Body"], "messageId": queued["MessageId"]}]}
+        assert asyncio.run(batch(delivery)) == {"batchItemFailures": []}
+        assert asyncio.run(batch(delivery)) == {"batchItemFailures": []}
+        assert calls == [(1, "math", "kindergarten")]
+        [saved] = client.get(endpoint, headers=auth).json()["items"]
+        assert saved["result"]["questions"][0]["answer"] == "3"
+        assert client.get(endpoint, headers=other).json()["items"] == []
+        assert not store.s3.list_objects_v2(Bucket=settings.media_bucket).get("Contents")
+        assert client.delete(resource, headers=auth).status_code == 204
+        assert client.get(resource, headers=auth).status_code == 404

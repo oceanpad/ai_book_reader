@@ -1,6 +1,6 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { test } from "vitest";
+import { expect, test } from "vitest";
 import { ReaderApiStack, ReaderAuthStack, ReaderDataStack, ReaderWebStack } from "../lib/stacks.js";
 
 test("foundation keeps media private and protects all non-health AWS routes", () => {
@@ -37,6 +37,7 @@ test("foundation keeps media private and protects all non-health AWS routes", ()
   Template.fromStack(auth).hasResourceProperties("AWS::Cognito::UserPool", { AdminCreateUserConfig: { AllowAdminCreateUserOnly: true } });
   Template.fromStack(auth).hasResourceProperties("AWS::Cognito::UserPoolClient", {
     GenerateSecret: false,
+    ExplicitAuthFlows: Match.arrayWith(["ALLOW_USER_PASSWORD_AUTH"]),
     AllowedOAuthFlows: ["code"],
     AllowedOAuthScopes: Match.arrayWith([
       { "Fn::Join": ["", [{ Ref: Match.anyValue() }, "/read"]] },
@@ -48,23 +49,31 @@ test("foundation keeps media private and protects all non-health AWS routes", ()
     Scopes: Match.arrayWith([Match.objectLike({ ScopeName: "read" }), Match.objectLike({ ScopeName: "write" })]),
   });
   const apiTemplate = Template.fromStack(api);
-  apiTemplate.resourceCountIs("AWS::ApiGatewayV2::Route", 17);
-  for (const route of ["POST /api/books/{book_id}/completions", "PATCH /api/books/{book_id}", "POST /api/books/{book_id}/cover", "DELETE /api/books/{book_id}", "POST /api/readings/{job_id}/narration"]) {
-    apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: route, AuthorizationType: "JWT", AuthorizationScopes: ["reader/write"] });
+  apiTemplate.resourceCountIs("AWS::ApiGatewayV2::Route", 21);
+  for (const [route, scope] of [["GET /api/homework", "reader/read"], ["GET /api/homework/{entry_id}", "reader/read"], ["POST /api/homework", "reader/write"], ["DELETE /api/homework/{entry_id}", "reader/write"]]) {
+    apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: route, AuthorizationType: "JWT", AuthorizationScopes: [scope, "aws.cognito.signin.user.admin"] });
   }
-  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/books", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
-  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "POST /api/books", AuthorizationType: "JWT", AuthorizationScopes: ["reader/write"] });
-  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings/{job_id}/original", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
-  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings/{job_id}/thumbnail", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
-  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
-  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/config", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read"] });
+  for (const route of ["POST /api/books/{book_id}/completions", "PATCH /api/books/{book_id}", "POST /api/books/{book_id}/cover", "DELETE /api/books/{book_id}", "POST /api/readings/{job_id}/narration"]) {
+    apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: route, AuthorizationType: "JWT", AuthorizationScopes: ["reader/write", "aws.cognito.signin.user.admin"] });
+  }
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/books", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read", "aws.cognito.signin.user.admin"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "POST /api/books", AuthorizationType: "JWT", AuthorizationScopes: ["reader/write", "aws.cognito.signin.user.admin"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings/{job_id}/original", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read", "aws.cognito.signin.user.admin"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings/{job_id}/thumbnail", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read", "aws.cognito.signin.user.admin"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/readings", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read", "aws.cognito.signin.user.admin"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/config", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read", "aws.cognito.signin.user.admin"] });
   apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/health", AuthorizationType: "NONE" });
   apiTemplate.hasResourceProperties("AWS::Lambda::Function", { Runtime: "python3.12", Architectures: ["arm64"], Environment: { Variables: Match.objectLike({ READER_MODE: "aws" }) } });
   apiTemplate.resourceCountIs("AWS::Lambda::Function", 4);
   apiTemplate.hasResourceProperties("AWS::Lambda::Function", { Handler: "backend.worker.handler", ReservedConcurrentExecutions: Match.absent() });
   apiTemplate.hasResourceProperties("AWS::Lambda::EventSourceMapping", { BatchSize: 1, FunctionResponseTypes: ["ReportBatchItemFailures"], ScalingConfig: { MaximumConcurrency: 2 } });
-  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "POST /api/readings/{job_id}", AuthorizationType: "JWT", AuthorizationScopes: ["reader/write"] });
+  apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "POST /api/readings/{job_id}", AuthorizationType: "JWT", AuthorizationScopes: ["reader/write", "aws.cognito.signin.user.admin"] });
   Template.fromStack(web).hasResourceProperties("AWS::CloudFront::Distribution", {
     DistributionConfig: Match.objectLike({ CacheBehaviors: Match.arrayWith([Match.objectLike({ PathPattern: "/api/*", CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" })]) }),
   });
+  const policies = Template.fromStack(web).findResources("AWS::CloudFront::ResponseHeadersPolicy");
+  for (const policy of Object.values(policies)) {
+    const csp = policy.Properties.ResponseHeadersPolicyConfig.SecurityHeadersConfig.ContentSecurityPolicy;
+    expect(JSON.stringify(csp)).toContain("https://cognito-idp.ap-southeast-1.");
+  }
 });

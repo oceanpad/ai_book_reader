@@ -41,3 +41,22 @@ def test_bootstrap_suppresses_invitation_and_writes_password_once_with_private_p
     cognito.admin_get_user.return_value = {"UserStatus": "CONFIRMED"}
     deploy_cloud.bootstrap(session, outputs, "adult@example.invalid")
     assert not path.exists()
+
+
+def test_publish_includes_cognito_region_without_provider_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy_cloud, "ROOT", tmp_path)
+    command = MagicMock()
+    monkeypatch.setattr(deploy_cloud, "command", command)
+    session = MagicMock(region_name="ap-southeast-1")
+    outputs = {
+        "ReaderAuthStack": {
+            "CognitoDomain": "https://login.example.invalid",
+            "UserPoolClientId": "client",
+        },
+        "ReaderWebStack": {"FrontendBucketName": "frontend", "DistributionId": "distribution"},
+    }
+    deploy_cloud.publish(session, outputs, {"PATH": "/bin", "OPENROUTER_API_KEY": "private"})
+    env = command.call_args.args[1]
+    assert env["VITE_COGNITO_REGION"] == "ap-southeast-1"
+    assert env["VITE_COGNITO_CLIENT_ID"] == "client"
+    assert "OPENROUTER_API_KEY" not in env

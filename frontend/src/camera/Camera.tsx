@@ -9,7 +9,7 @@ import { DeleteBook } from "../reader/DeleteBook";
 import type { PublicConfig } from "../api/contracts.generated";
 import { useReading } from "../reader/useReading";
 import { pendingState } from "../reader/useHistory";
-import { captureAndStop, MIN_PAGE_ASPECT } from "./frame";
+import { captureAndStop, FRAME_ASPECTS, type CaptureMode } from "./frame";
 import { cameraError, useCamera } from "./useCamera";
 import "./recording.css";
 
@@ -19,6 +19,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
   const config = publicConfig.camera;
   const canRead = publicConfig.recognition_available && publicConfig.speech_available;
   const camera = useCamera();
+  const [mode, setMode] = useState<CaptureMode>("single");
   const [slide, setSlide] = useState<number | null>(preview ? 0 : null);
   // The slideshow follows its active page itself while the history is covered.
   const reading = useReading(run, book.id, slide === null);
@@ -54,7 +55,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
     setCapturing(true);
     setError(null);
     try {
-      const image = await captureAndStop(video, config, camera.stop);
+      const image = await captureAndStop(video, mode, config, camera.stop);
       if (version !== captureVersion.current || document.hidden) return;
       if (canRead) void reading.submit(image.blob, image.mode);
       else setPreviewOnlyDone(true);
@@ -79,7 +80,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
   }, [cameraOpen]);
   const busy = capturing || reading.busy;
   const processing = editing || busy || reading.cleaning || reading.deleting;
-  const frameAspect = Math.max(camera.aspect, MIN_PAGE_ASPECT);
+  const frameAspect = FRAME_ASPECTS[mode];
   const stage = capturing ? "Capturing the page…" : "Sending the reading request…";
   const limit = publicConfig.limits?.max_captures_ahead ?? 10;
   const pending = reading.history.items.filter(item => pendingState(item.state));
@@ -88,7 +89,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
     <section className="camera-card recording-studio" aria-label="Book camera and narration">
       <header className="studio-masthead">
         <div className="studio-topline"><button onClick={back} disabled={busy || reading.cleaning || reading.deleting}>← Books</button><span className="eyebrow">Reading studio</span></div>
-        <BookHeading book={book} run={run} disabled={processing} renamed={name => setBook(current => ({ ...current, name }))} />
+        <BookHeading book={book} run={run} disabled={processing} updated={setBook} />
       </header>
       {slide !== null && !reading.history.loading && (!reading.history.error || reading.history.items.length > 0) && <BookSlideshow onComplete={onComplete} pages={reading.history.items} startIndex={slide} changed={page => { if (reading.job?.id === page.id && reading.job.state === "READY") void reading.reset(false); }} close={() => { setSlide(null); reading.history.refreshHistory(); }} />}
       {busy && <BusyDialog message={stage} onStop={() => { cancelFrame(); reading.interrupt(); }} />}
@@ -98,6 +99,10 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
             <div className="studio-topline"><span className="eyebrow">Capture desk</span><span className="studio-badge">{live ? "Camera live" : starting ? "Opening camera…" : "Camera off"}</span></div>
             <h2 id="capture-title">Record a page</h2>
             <p className="studio-guide">{live ? "Fit the page inside the frame, then select Submit." : "Open your book to the page you want to capture."}</p>
+            <div className="capture-sizes" role="group" aria-label="Preview size">
+              <button type="button" aria-pressed={mode === "single"} disabled={starting || processing} onClick={() => setMode("single")}>1 page<small>Vertical</small></button>
+              <button type="button" aria-pressed={mode === "spread"} disabled={starting || processing} onClick={() => setMode("spread")}>2 pages<small>Horizontal</small></button>
+            </div>
           </div>
           <div className="capture-frame-slot">
             <div hidden={!cameraOpen} className="viewfinder">

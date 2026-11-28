@@ -9,6 +9,189 @@
       "title": "AudioState",
       "type": "string"
     },
+    "Book": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BookLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BookLanguage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Book creation time in Unix milliseconds, estimated from the earliest saved page for legacy books",
+          "title": "Created At"
+        },
+        "cover": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BookCover"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "read_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Read Count"
+        }
+      },
+      "required": [
+        "name",
+        "id"
+      ],
+      "title": "Book",
+      "type": "object"
+    },
+    "BookCover": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "page_id": {
+          "title": "Page Id",
+          "type": "string"
+        },
+        "thumbnail_url": {
+          "title": "Thumbnail Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "page_id",
+        "thumbnail_url"
+      ],
+      "title": "BookCover",
+      "type": "object"
+    },
+    "BookLanguage": {
+      "enum": [
+        "en",
+        "zh"
+      ],
+      "title": "BookLanguage",
+      "type": "string"
+    },
+    "BookLevel": {
+      "enum": [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6"
+      ],
+      "title": "BookLevel",
+      "type": "string"
+    },
+    "BookUpdate": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BookLevel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BookLanguage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "BookUpdate",
+      "type": "object"
+    },
+    "Books": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Book"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "Books",
+      "type": "object"
+    },
     "CameraConfig": {
       "additionalProperties": false,
       "properties": {
@@ -132,6 +315,223 @@
         "service"
       ],
       "title": "Health",
+      "type": "object"
+    },
+    "HomeworkEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        },
+        "subject": {
+          "enum": [
+            "math",
+            "english",
+            "chinese"
+          ],
+          "title": "Subject",
+          "type": "string"
+        },
+        "level": {
+          "enum": [
+            "kindergarten",
+            "primary1",
+            "primary2",
+            "primary3",
+            "primary4",
+            "primary5",
+            "primary6"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "ready",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HomeworkResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "required": [
+        "id",
+        "created_at",
+        "subject",
+        "level",
+        "state",
+        "result",
+        "error"
+      ],
+      "title": "HomeworkEntry",
+      "type": "object"
+    },
+    "HomeworkHistory": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/HomeworkEntry"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Cursor"
+        }
+      },
+      "required": [
+        "items",
+        "next_cursor"
+      ],
+      "title": "HomeworkHistory",
+      "type": "object"
+    },
+    "HomeworkQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "question": {
+          "maxLength": 800,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "answer": {
+          "maxLength": 800,
+          "minLength": 1,
+          "title": "Answer",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "maxLength": 400,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 6,
+          "title": "Steps",
+          "type": "array"
+        },
+        "language": {
+          "enum": [
+            "en",
+            "zh"
+          ],
+          "title": "Language",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question",
+        "answer",
+        "steps",
+        "language"
+      ],
+      "title": "HomeworkQuestion",
+      "type": "object"
+    },
+    "HomeworkResult": {
+      "additionalProperties": false,
+      "properties": {
+        "questions": {
+          "items": {
+            "$ref": "#/$defs/HomeworkQuestion"
+          },
+          "title": "Questions",
+          "type": "array"
+        },
+        "note": {
+          "maxLength": 500,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "questions",
+        "note"
+      ],
+      "title": "HomeworkResult",
+      "type": "object"
+    },
+    "HomeworkSubmission": {
+      "additionalProperties": false,
+      "properties": {
+        "subject": {
+          "enum": [
+            "math",
+            "english",
+            "chinese"
+          ],
+          "title": "Subject",
+          "type": "string"
+        },
+        "level": {
+          "enum": [
+            "kindergarten",
+            "primary1",
+            "primary2",
+            "primary3",
+            "primary4",
+            "primary5",
+            "primary6"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "images": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Images",
+          "type": "array"
+        }
+      },
+      "required": [
+        "subject",
+        "level",
+        "images"
+      ],
+      "title": "HomeworkSubmission",
       "type": "object"
     },
     "Limits": {
@@ -509,6 +909,12 @@
   },
   "additionalProperties": false,
   "properties": {
+    "homework_submission": {
+      "$ref": "#/$defs/HomeworkSubmission"
+    },
+    "homework_history": {
+      "$ref": "#/$defs/HomeworkHistory"
+    },
     "recent_captures": {
       "$ref": "#/$defs/RecentCaptures"
     },
@@ -535,9 +941,17 @@
     },
     "reading_job": {
       "$ref": "#/$defs/ReadingJob"
+    },
+    "books": {
+      "$ref": "#/$defs/Books"
+    },
+    "book_update": {
+      "$ref": "#/$defs/BookUpdate"
     }
   },
   "required": [
+    "homework_submission",
+    "homework_history",
     "recent_captures",
     "public_config",
     "health",
@@ -546,7 +960,9 @@
     "session_state",
     "audio_state",
     "vision_result",
-    "reading_job"
+    "reading_job",
+    "books",
+    "book_update"
   ],
   "title": "ReaderContracts",
   "type": "object"

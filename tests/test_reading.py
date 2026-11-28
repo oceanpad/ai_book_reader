@@ -203,6 +203,55 @@ def test_local_completions_are_atomic_scoped_and_durable(tmp_path):
             ).fetchone()
 
 
+def test_book_metadata_migrates_empty_and_persists_partial_updates(tmp_path):
+    db = tmp_path / "books.sqlite3"
+    config = settings(local_books_path=str(db))
+    headers = {"X-Reader-Run": str(uuid4())}
+    other = {"X-Reader-Run": str(uuid4())}
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE books(owner TEXT, id TEXT, name TEXT NOT NULL, "
+            "created_at INTEGER, PRIMARY KEY(owner,id))"
+        )
+        conn.execute(
+            "INSERT INTO books VALUES(?,?,?,?)", (headers["X-Reader-Run"], "old", "Old book", None)
+        )
+    books = "/api/local/books"
+    with TestClient(create_app(config)) as client:
+        legacy = client.get(books, headers=headers).json()["items"][1]
+        assert legacy == {"id": "old", "name": "Old book"}
+        created = client.post(
+            books, headers=headers, json={"name": "New book", "level": "P1", "language": "en"}
+        )
+        assert created.status_code == 201
+        book = created.json()
+        path = f"{books}/{book['id']}"
+        assert client.patch(path, headers=other, json={"level": "P2"}).status_code == 404
+        assert client.patch(path, headers=headers, json={"level": "P7"}).status_code == 422
+        assert client.patch(path, headers=headers, json={"language": "fr"}).status_code == 422
+        assert (
+            client.patch(path, headers=headers, json={"level": "P6", "language": "zh"}).status_code
+            == 204
+        )
+        assert client.patch(path, headers=headers, json={"name": "Renamed"}).status_code == 204
+    with TestClient(create_app(config)) as client:
+        saved = next(
+            b for b in client.get(books, headers=headers).json()["items"] if b["id"] == book["id"]
+        )
+        assert saved == {**book, "name": "Renamed", "level": "P6", "language": "zh"}
+        assert (
+            client.patch(path, headers=headers, json={"level": None, "language": None}).status_code
+            == 204
+        )
+        cleared = next(
+            b for b in client.get(books, headers=headers).json()["items"] if b["id"] == book["id"]
+        )
+        assert "level" not in cleared and "language" not in cleared
+        assert (
+            client.patch(books + "/old", headers=headers, json={"level": "P3"}).status_code == 204
+        )
+
+
 def test_delete_local_book_removes_nonplayable_pages_and_preserves_earlier(tmp_path):
     config = settings(local_books_path=str(tmp_path / "books.sqlite3"))
     fail = False
@@ -224,6 +273,11 @@ def test_delete_local_book_removes_nonplayable_pages_and_preserves_earlier(tmp_p
         path = f"{books}/{book['id']}"
         assert submit(client, earlier, headers).status_code == 202
         assert wait_for_job(client, earlier, headers)["state"] == "READY"
+        pages = client.get("/api/local/readings?book_id=earlier", headers=headers).json()["items"]
+        assert client.get(books, headers=headers).json()["items"][0]["created_at"] == (
+            pages[0]["created_at"] * 1000
+        )
+        assert "created_at" not in client.get(books, headers=stranger).json()["items"][0]
         fail = True
         assert submit(client, target + f"?book_id={book['id']}", headers).status_code == 202
         assert wait_for_job(client, target, headers)["state"] == "FAILED"
@@ -270,6 +324,7 @@ def test_local_book_cover_on_legacy_schema(tmp_path, unavailable):
         ).json() == {"read_count": 1}
         saved = client.post(endpoint, headers=headers, json=ref)
         assert saved.status_code == 200
+        assert saved.json()["created_at"] == app.state.reader.jobs[page_id].created_at * 1000
         thumb = client.get("/api/local/readings", headers=headers).json()["items"][0][
             "thumbnail_url"
         ]
@@ -307,7 +362,7 @@ def test_local_book_cover_on_legacy_schema(tmp_path, unavailable):
         }
 
 
-def test_successive_captures_keep_latest_ten_playable_in_same_run(tmp_path):
+def test_successive_captures_keep_latest_ten_playable_in_same_run(tmp_path, monkeypatch):
     def provider(request):
         if request.url.path == "/api/v1/chat/completions":
             return completion(result())
@@ -320,9 +375,12 @@ def test_successive_captures_keep_latest_ten_playable_in_same_run(tmp_path):
     _, headers = new_request()
     with TestClient(create_app(config)) as client:
         assert client.get(books).status_code == 422
-        created = client.post(books, headers=headers, json={"name": "My pages"})
+        with monkeypatch.context() as patch:
+            patch.setattr(time, "time_ns", lambda: 1_700_000_000_456_789_000)
+            created = client.post(books, headers=headers, json={"name": "My pages"})
         assert created.status_code == 201
         book = created.json()
+        assert book["created_at"] == 1_700_000_000_456
 
     with TestClient(create_app(config, transport=httpx.MockTransport(provider))) as client:
         _, other_run = new_request()

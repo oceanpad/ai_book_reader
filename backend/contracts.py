@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -130,8 +130,38 @@ class NarrationEdit(Contract):
     narration: str = Field(strict=True, min_length=1, max_length=20000)
 
 
+class BookLevel(StrEnum):
+    P1 = "P1"
+    P2 = "P2"
+    P3 = "P3"
+    P4 = "P4"
+    P5 = "P5"
+    P6 = "P6"
+
+
+class BookLanguage(StrEnum):
+    ENGLISH = "en"
+    CHINESE = "zh"
+
+
 class BookCreate(Contract):
     name: str = Field(min_length=1, max_length=200)
+    level: BookLevel | None = None
+    language: BookLanguage | None = None
+
+
+class BookUpdate(Contract):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=False)
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    level: BookLevel | None = None
+    language: BookLanguage | None = None
+
+    @model_validator(mode="after")
+    def validate_changes(self) -> Self:
+        if not self.model_fields_set or ("name" in self.model_fields_set and self.name is None):
+            raise ValueError("Supply book details to update; the name cannot be empty")
+        return self
 
 
 class BookCompletion(Contract):
@@ -154,11 +184,14 @@ class BookCover(Contract):
 
 
 class Book(BookCreate):
+    # Book endpoints omit unset metadata rather than returning null fields.
+    model_config = ConfigDict(json_schema_serialization_defaults_required=False)
+
     id: str
     created_at: int | None = Field(
         default=None,
         description="Book creation time in Unix milliseconds, estimated from the earliest saved "
-        "page for legacy books", 
+        "page for legacy books",
     )
     cover: BookCover | None = None
     read_count: int | None = None
@@ -192,7 +225,53 @@ class RecentCaptures(Contract):
     next_cursor: str | None = None
 
 
+HomeworkLevel = Literal[
+    "kindergarten", "primary1", "primary2", "primary3", "primary4", "primary5", "primary6"
+]
+
+
+class HomeworkSubmission(Contract):
+    subject: Literal["math", "english", "chinese"]
+    level: HomeworkLevel
+    images: list[str] = Field(min_length=1, max_length=4)
+
+
+class HomeworkQuestion(Contract):
+    question: str = Field(min_length=1, max_length=800)
+    answer: str = Field(min_length=1, max_length=800)
+    steps: list[Annotated[str, Field(min_length=1, max_length=400)]] = Field(max_length=6)
+    language: Literal["en", "zh"]
+
+
+class HomeworkResult(Contract):
+    questions: list[HomeworkQuestion]
+    note: str = Field(max_length=500)
+
+    @model_validator(mode="after")
+    def limit_questions(self) -> Self:
+        if len(self.questions) > 20:
+            raise ValueError("A homework result can include at most 20 questions.")
+        return self
+
+
+class HomeworkEntry(Contract):
+    id: str
+    created_at: str
+    subject: Literal["math", "english", "chinese"]
+    level: HomeworkLevel
+    state: Literal["pending", "ready", "failed"]
+    result: HomeworkResult | None = None
+    error: str | None = None
+
+
+class HomeworkHistory(Contract):
+    items: list[HomeworkEntry]
+    next_cursor: str | None = None
+
+
 class ReaderContracts(Contract):
+    homework_submission: HomeworkSubmission
+    homework_history: HomeworkHistory
     recent_captures: RecentCaptures
     public_config: PublicConfig
     health: Health
@@ -202,3 +281,5 @@ class ReaderContracts(Contract):
     audio_state: AudioState
     vision_result: VisionResult
     reading_job: ReadingJob
+    books: Books
+    book_update: BookUpdate

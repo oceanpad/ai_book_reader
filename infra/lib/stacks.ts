@@ -141,6 +141,7 @@ export class ReaderAuthStack extends Stack {
       generateSecret: false,
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
+      authFlows: { userPassword: true, userSrp: true },
       oAuth: {
         flows: { authorizationCodeGrant: true },
         scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.resourceServer(server, read), cognito.OAuthScope.resourceServer(server, write)],
@@ -245,8 +246,12 @@ export class ReaderApiStack extends Stack {
       jwtAudience: [props.userPoolClient.userPoolClientId],
     });
     api.addRoutes({ path: "/api/health", methods: [apigw.HttpMethod.GET], integration });
-    api.addRoutes({ path: "/api/config", methods: [apigw.HttpMethod.GET], integration, authorizer, authorizationScopes: ["reader/read"] });
+    api.addRoutes({ path: "/api/config", methods: [apigw.HttpMethod.GET], integration, authorizer, authorizationScopes: ["reader/read", "aws.cognito.signin.user.admin"] });
     for (const [route, method, scope] of [
+      ["/api/homework", apigw.HttpMethod.GET, "reader/read"],
+      ["/api/homework", apigw.HttpMethod.POST, "reader/write"],
+      ["/api/homework/{entry_id}", apigw.HttpMethod.GET, "reader/read"],
+      ["/api/homework/{entry_id}", apigw.HttpMethod.DELETE, "reader/write"],
       ["/api/books", apigw.HttpMethod.GET, "reader/read"],
       ["/api/books", apigw.HttpMethod.POST, "reader/write"],
       ["/api/books/{book_id}/completions", apigw.HttpMethod.POST, "reader/write"],
@@ -262,7 +267,7 @@ export class ReaderApiStack extends Stack {
       ["/api/readings/{job_id}/audio/{chunk}", apigw.HttpMethod.GET, "reader/read"],
       ["/api/readings/{job_id}/original", apigw.HttpMethod.GET, "reader/read"],
       ["/api/readings/{job_id}/thumbnail", apigw.HttpMethod.GET, "reader/read"],
-    ] as const) api.addRoutes({ path: route, methods: [method], integration, authorizer, authorizationScopes: [scope] });
+    ] as const) api.addRoutes({ path: route, methods: [method], integration, authorizer, authorizationScopes: [scope, "aws.cognito.signin.user.admin"] });
     const stage = api.defaultStage?.node.defaultChild as apigw.CfnStage;
     stage.defaultRouteSettings = { throttlingBurstLimit: 20, throttlingRateLimit: 10 };
     const accessLogs = new logs.LogGroup(this, "ApiAccessLogs", { retention: logs.RetentionDays.TWO_WEEKS });
@@ -291,7 +296,7 @@ export class ReaderWebStack extends Stack {
     const headers = new cloudfront.ResponseHeadersPolicy(this, "ReaderHeaders", {
       securityHeadersBehavior: {
         contentSecurityPolicy: {
-          contentSecurityPolicy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://${props.media.bucketRegionalDomainName}; media-src 'self' blob:; connect-src 'self' ${props.cognitoDomain} https://${props.media.bucketRegionalDomainName}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
+          contentSecurityPolicy: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://${props.media.bucketRegionalDomainName}; media-src 'self' blob:; connect-src 'self' ${props.cognitoDomain} https://cognito-idp.${this.region}.${this.urlSuffix} https://${props.media.bucketRegionalDomainName}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`,
           override: true,
         },
         contentTypeOptions: { override: true },

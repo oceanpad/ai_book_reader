@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>Little Pages: a happy book with a spark of magic</title>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="#215a4d" />
+  <path d="M10 25c8-3 15-2 22 2 7-4 14-5 22-2v26c-8-3-15-2-22 2-7-4-14-5-22-2V25Z" fill="#e5bf88" />
+  <path d="M10 22c8-3 15-2 22 2v26c-7-4-14-5-22-2V22Z" fill="#fff5dd" />
+  <path d="M32 24c7-4 14-5 22-2v26c-8-3-15-2-22 2V24Z" fill="#ffebc2" />
+  <path d="M32 26v11m0 10v3" stroke="#d4bb8e" stroke-width="2" stroke-linecap="round" />
+  <g fill="#215a4d">
+    <circle cx="23" cy="33" r="2.3" />
+    <circle cx="41" cy="33" r="2.3" />
+  </g>
+  <path d="M26 40q6 7 12 0" stroke="#215a4d" stroke-width="2.8" stroke-linecap="round" />
+  <path d="m47 7 2.7 6.3L56 16l-6.3 2.7L47 25l-2.7-6.3L38 16l6.3-2.7L47 7Z" fill="#f5c76b" />
+</svg>

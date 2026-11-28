@@ -1,7 +1,34 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.contracts import CameraConfig, Limits, VisionResult
+from backend.contracts import (
+    BookCreate,
+    BookUpdate,
+    CameraConfig,
+    Limits,
+    ReaderContracts,
+    VisionResult,
+)
+
+
+def test_serialized_book_contract_accepts_undated_books():
+    schema = ReaderContracts.model_json_schema(mode="serialization")["$defs"]["Book"]
+    assert "created_at" not in schema["required"]
+    assert {"type": "integer"} in schema["properties"]["created_at"]["anyOf"]
+
+
+@pytest.mark.parametrize("fields", [{"level": "P0"}, {"level": "P7"}, {"language": "fr"}])
+def test_book_metadata_rejects_unsupported_values(fields):
+    with pytest.raises(ValidationError):
+        BookCreate.model_validate({"name": "Story", **fields})
+    with pytest.raises(ValidationError):
+        BookUpdate.model_validate(fields)
+
+
+@pytest.mark.parametrize("fields", [{}, {"name": None}, {"name": " "}])
+def test_book_updates_require_changes_and_a_nonempty_name(fields):
+    with pytest.raises(ValidationError):
+        BookUpdate.model_validate(fields)
 
 
 def result(**overrides):

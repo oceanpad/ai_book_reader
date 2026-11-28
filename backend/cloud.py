@@ -23,7 +23,10 @@ from backend.contracts import (
     RECENT_CAPTURE_LIMIT,
     Book,
     BookCover,
+    BookLanguage,
+    BookLevel,
     Books,
+    BookUpdate,
     CaptureStage,
     CaptureState,
     PlayableCapture,
@@ -106,12 +109,29 @@ class CloudStore:
             raise LocalError("This capture has expired. Capture the page again.", 404)
         return item
 
-    def create_book(self, owner: str, name: str) -> Book:
-        book = Book(id=str(uuid4()), name=name, created_at=time.time_ns() // 1_000_000)
+    def create_book(
+        self,
+        owner: str,
+        name: str,
+        *,
+        level: BookLevel | None = None,
+        language: BookLanguage | None = None,
+    ) -> Book:
+        book = Book(
+            id=str(uuid4()),
+            name=name,
+            level=level,
+            language=language,
+            created_at=time.time_ns() // 1_000_000,
+        )
         self.table.put_item(
             Item={
-                "PK": f"USER#{owner}", "SK": f"BOOK#{book.id}", "name": book.name,
+                "PK": f"USER#{owner}",
+                "SK": f"BOOK#{book.id}",
+                "name": book.name,
                 "createdAtMs": book.created_at,
+                **({"level": book.level} if book.level is not None else {}),
+                **({"language": book.language} if book.language is not None else {}),
             },
             ConditionExpression="attribute_not_exists(PK)",
         )
@@ -169,16 +189,33 @@ class CloudStore:
             raise LocalError("Book not found.", 404)
         return int(str(row["readCount"]))
 
-    def rename_book(self, owner: str, book_id: str, name: str) -> None:
+    def update_book(self, owner: str, book_id: str, changes: BookUpdate) -> None:
         if book_id == EARLIER.id:
-            raise LocalError("Earlier captures cannot be renamed.", 409)
+            raise LocalError("Earlier captures cannot be edited as a book.", 409)
+        values = changes.model_dump(mode="json", exclude_unset=True)
+        names = {f"#{field}": field for field in values}
+        updates = [f"#{field}=:{field}" for field, value in values.items() if value is not None]
+        removes = [f"#{field}" for field, value in values.items() if value is None]
+        expression = " ".join(
+            part
+            for part in (
+                "SET " + ", ".join(updates) if updates else "",
+                "REMOVE " + ", ".join(removes) if removes else "",
+            )
+            if part
+        )
+        params: dict[str, Any] = {}
+        if updates:
+            params["ExpressionAttributeValues"] = {
+                f":{field}": value for field, value in values.items() if value is not None
+            }
         try:
             self.table.update_item(
                 Key={"PK": f"USER#{owner}", "SK": f"BOOK#{book_id}"},
-                UpdateExpression="SET #n=:name",
+                UpdateExpression=expression,
                 ConditionExpression="attribute_exists(PK) AND attribute_not_exists(deleting)",
-                ExpressionAttributeNames={"#n": "name"},
-                ExpressionAttributeValues={":name": name},
+                ExpressionAttributeNames=names,
+                **params,
             )
         except ClientError as exc:
             if not conditional(exc):
@@ -271,6 +308,10 @@ class CloudStore:
         return Book(
             id=book_id,
             name=name,
+            level=BookLevel(str(book["level"])) if book and book.get("level") is not None else None,
+            language=BookLanguage(str(book["language"]))
+            if book and book.get("language") is not None
+            else None,
             cover=cover,
             created_at=self._book_created_at(owner, book_id, book),
             read_count=int(str(book["readCount"])) if book and "readCount" in book else None,
@@ -304,6 +345,10 @@ class CloudStore:
                 book = Book(
                     id=book_id,
                     name=str(row["name"]),
+                    level=BookLevel(str(row["level"])) if row.get("level") is not None else None,
+                    language=BookLanguage(str(row["language"]))
+                    if row.get("language") is not None
+                    else None,
                     created_at=self._book_created_at(owner, book_id, row),
                     cover=cover,
                     read_count=int(str(row["readCount"])) if "readCount" in row else None,
@@ -314,8 +359,11 @@ class CloudStore:
                     items.append(book)
             if "LastEvaluatedKey" not in page:
                 if earlier is None:
-                    earlier = Book(id=EARLIER.id, name=EARLIER.name,
-                                   created_at=self._book_created_at(owner, EARLIER.id, None))
+                    earlier = Book(
+                        id=EARLIER.id,
+                        name=EARLIER.name,
+                        created_at=self._book_created_at(owner, EARLIER.id, None),
+                    )
                 return Books(items=[earlier, *items])
             start = {"ExclusiveStartKey": page["LastEvaluatedKey"]}
 
@@ -433,11 +481,32 @@ class CloudStore:
                 Limit=RECENT_CAPTURE_LIMIT,
                 **start,
             )
-            for candidate in page.get("Items", []):
+            candidates = page.get("Items", [])
+            current: dict[tuple[str, str], dict[str, Any]] = {}
+            pending: dict[str, Any] = (
+                {
+                    self.settings.table_name: {
+                        "Keys": [{"PK": row["PK"], "SK": row["SK"]} for row in candidates],
+                        "ConsistentRead": True,
+                    }
+                }
+                if candidates
+                else {}
+            )
+            for attempt in range(5):
+                if not pending:
+                    break
+                batch = self.table.meta.client.batch_get_item(RequestItems=pending)
+                for row in batch.get("Responses", {}).get(self.settings.table_name, []):
+                    current[str(row["PK"]), str(row["SK"])] = row
+                pending = batch.get("UnprocessedKeys", {})
+                if pending:
+                    if attempt == 4:
+                        raise LocalError("Capture history is busy. Refresh and try again.", 503)
+                    time.sleep(random.uniform(0.01, 0.02) * 2**attempt)
+            for candidate in candidates:
                 # The index can lag a discard. Never serve narration from its projection.
-                item: dict[str, Any] = self.table.get_item(
-                    Key={"PK": candidate["PK"], "SK": candidate["SK"]}, ConsistentRead=True
-                ).get("Item", {})
+                item = current.get((str(candidate["PK"]), str(candidate["SK"])), {})
                 if (
                     item.get("owner") == owner
                     and (book_id is None or item.get("bookId", EARLIER.id) == book_id)
