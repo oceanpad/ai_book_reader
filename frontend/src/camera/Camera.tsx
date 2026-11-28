@@ -111,7 +111,7 @@ export function Camera({ config: publicConfig, book: initialBook, run, preview, 
           </div>
           <p id="studio-submit-note" className="studio-note">{canRead ? "Submit sends this page to OpenRouter and its providers for recognition and AI speech." : "Preview only. No page will be sent for narration."}</p>
           <div className="camera-controls">
-            {!live && <button className="primary" disabled={starting || processing || queueFull} onClick={() => { setSlide(null); setError(null); setPreviewOnlyDone(false); reading.pause(); void camera.start(); }}>{starting ? "Starting…" : camera.status === "paused" ? "Continue" : camera.status === "error" ? "Try Camera Again" : reading.job ? "Capture next page" : "Start Reading"}</button>}
+            {!live && <button className="primary" disabled={starting || processing || queueFull} onClick={() => { setSlide(null); setError(null); setPreviewOnlyDone(false); reading.pause(); void camera.start(); }}>{starting ? "Starting…" : camera.status === "paused" ? "Continue" : camera.status === "error" ? "Try Camera Again" : reading.job ? "Capture next page" : "Start Recording"}</button>}
             {live && <button className="primary" aria-describedby="studio-submit-note" aria-busy={processing} disabled={processing || reading.cleanupFailed || queueFull} onClick={() => void takeCapture()}>Submit</button>}
             {live && <button disabled={processing} onClick={() => void camera.start(camera.facing === "environment" ? "user" : "environment")}>Switch Camera</button>}
           </div>

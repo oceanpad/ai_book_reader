@@ -172,9 +172,17 @@ class ReadCount(Contract):
     read_count: int
 
 
-class BookCoverRequest(Contract):
+class BookPageReference(Contract):
     run_id: UUID
     page_id: UUID
+
+
+class BookPageMove(BookPageReference):
+    page_number: int = Field(ge=1, strict=True)
+
+
+class BookPageOrder(Contract):
+    page_order: list[str] = Field(description="Capture keys in book order, formatted as run/page")
 
 
 class BookCover(Contract):
@@ -223,6 +231,11 @@ class PlayableCapture(Contract):
 class RecentCaptures(Contract):
     items: list[PlayableCapture] = Field(max_length=RECENT_CAPTURE_LIMIT)
     next_cursor: str | None = None
+    page_order: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Saved book order, included only on the first batch when set",
+    )
 
 
 HomeworkLevel = Literal[
@@ -283,3 +296,5 @@ class ReaderContracts(Contract):
     reading_job: ReadingJob
     books: Books
     book_update: BookUpdate
+    book_page_move: BookPageMove
+    book_page_order: BookPageOrder

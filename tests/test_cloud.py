@@ -17,7 +17,14 @@ from PIL import Image
 from backend.api import create_app
 from backend.cloud import CloudStore, LostLease
 from backend.config import Settings
-from backend.contracts import BookLanguage, BookLevel, BookUpdate, HomeworkResult, Limits
+from backend.contracts import (
+    BookLanguage,
+    BookLevel,
+    BookPageMove,
+    BookUpdate,
+    HomeworkResult,
+    Limits,
+)
 from backend.dispatcher import handler as dispatch
 from backend.homework import CloudHomework
 from backend.local_reader import LocalError
@@ -678,6 +685,62 @@ def test_book_history_pages_stably_across_equal_seconds_and_scopes(store):
     assert not store.recent("owner", book_id=empty.id).items
 
 
+def test_cloud_book_page_moves_persist_across_batches_and_capture_runs(store):
+    owner = "owner"
+    book = store.create_book(owner, "Story")
+    run = str(uuid4())
+    older = str(uuid4())
+    page_ids = [str(uuid4()) for _ in range(12)]
+
+    def page(i, capture_run, page_id, assigned):
+        store.table.put_item(
+            Item={
+                **store.key(owner, capture_run, page_id),
+                "id": page_id,
+                "run": capture_run,
+                "owner": owner,
+                "createdAt": 123,
+                "createdNs": i,
+                "state": "READY",
+                "narration": f"Page {i + 1}",
+                "audioKeys": ["audio.wav"],
+                **({"bookId": assigned, "ownerBook": f"{owner}#{assigned}"} if assigned else {}),
+            }
+        )
+        return f"{capture_run}/{page_id}"
+
+    captured = [page(i, older if i < 6 else run, pid, book.id) for i, pid in enumerate(page_ids)]
+    # The same capture ID in a different run and scope is a different page.
+    legacy = page(0, older, page_ids[6], None)
+    move = BookPageMove(run_id=run, page_id=page_ids[6], page_number=1)
+    with pytest.raises(LocalError, match="Book not found"):
+        store.move_page("other", book.id, move)
+    with pytest.raises(LocalError, match="Page not found"):
+        store.move_page(owner, "earlier", move)
+    expected = captured[6:7] + captured[:6] + captured[7:]
+    assert store.move_page(owner, book.id, move).page_order == expected
+
+    fresh = CloudStore(store.settings)
+    first = fresh.recent(owner, book_id=book.id)
+    assert first.page_order == expected and first.next_cursor
+    second = fresh.recent(owner, book_id=book.id, cursor=first.next_cursor)
+    assert second.page_order is None
+    assert [f"{item.run_id}/{item.id}" for item in first.items + second.items] == captured[::-1]
+    assert fresh.recent(owner).page_order is None
+
+    # A second move uses the saved order, filters out deleted pages and appends new pages.
+    fresh.cancel(owner, older, page_ids[1])
+    new = page(12, run, str(uuid4()), book.id)
+    move = BookPageMove(run_id=run, page_id=page_ids[6], page_number=12)
+    expected = captured[:1] + captured[2:6] + captured[7:] + [new, captured[6]]
+    assert fresh.move_page(owner, book.id, move).page_order == expected
+    assert fresh.recent(owner, book_id=book.id).page_order == expected
+
+    legacy_move = BookPageMove(run_id=older, page_id=page_ids[6], page_number=1)
+    assert store.move_page(owner, "earlier", legacy_move).page_order == [legacy]
+    assert store.books(owner).items[0].name == "Earlier captures"
+
+
 def test_legacy_book_dates_use_oldest_visible_page_in_each_scope(store, monkeypatch):
     owner = "owner"
     for book_id in ("legacy", "undated"):
@@ -1123,6 +1186,25 @@ def test_cloud_routes_derive_owner_from_gateway_claims_and_check_scopes(store, m
                 client.post(cover_path, headers={**library, **overrides}, json=ref).status_code
                 == status
             )
+            assert (
+                client.post(
+                    target + "/page-order",
+                    headers={**library, **overrides},
+                    json={**ref, "page_number": 1},
+                ).status_code
+                == status
+            )
+        order = {"page_order": [f"{ref['run_id']}/{ref['page_id']}"]}
+        assert (
+            client.post(
+                target + "/page-order", headers=library, json={**ref, "page_number": 1}
+            ).json()
+            == order
+        )
+        assert (
+            client.get(listing, headers=auth, params=params).json()["page_order"]
+            == order["page_order"]
+        )
         assert client.post(books + "/earlier/cover", headers=library, json=ref).status_code == 404
         saved = client.post(cover_path, headers=library, json=ref)
         assert saved.status_code == 200, saved.text

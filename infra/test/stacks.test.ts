@@ -49,11 +49,11 @@ test("foundation keeps media private and protects all non-health AWS routes", ()
     Scopes: Match.arrayWith([Match.objectLike({ ScopeName: "read" }), Match.objectLike({ ScopeName: "write" })]),
   });
   const apiTemplate = Template.fromStack(api);
-  apiTemplate.resourceCountIs("AWS::ApiGatewayV2::Route", 21);
+  apiTemplate.resourceCountIs("AWS::ApiGatewayV2::Route", 22);
   for (const [route, scope] of [["GET /api/homework", "reader/read"], ["GET /api/homework/{entry_id}", "reader/read"], ["POST /api/homework", "reader/write"], ["DELETE /api/homework/{entry_id}", "reader/write"]]) {
     apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: route, AuthorizationType: "JWT", AuthorizationScopes: [scope, "aws.cognito.signin.user.admin"] });
   }
-  for (const route of ["POST /api/books/{book_id}/completions", "PATCH /api/books/{book_id}", "POST /api/books/{book_id}/cover", "DELETE /api/books/{book_id}", "POST /api/readings/{job_id}/narration"]) {
+  for (const route of ["POST /api/books/{book_id}/completions", "PATCH /api/books/{book_id}", "POST /api/books/{book_id}/cover", "POST /api/books/{book_id}/page-order", "DELETE /api/books/{book_id}", "POST /api/readings/{job_id}/narration"]) {
     apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: route, AuthorizationType: "JWT", AuthorizationScopes: ["reader/write", "aws.cognito.signin.user.admin"] });
   }
   apiTemplate.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: "GET /api/books", AuthorizationType: "JWT", AuthorizationScopes: ["reader/read", "aws.cognito.signin.user.admin"] });

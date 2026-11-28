@@ -73,6 +73,8 @@
 .studio-state { color: var(--accent, #195952); font-weight: 600; }
 .studio-date { font-weight: 400; }
 .studio-page-tools[open] { flex-basis: 100%; }
+.studio-page-number { display: grid; gap: .35rem; width: fit-content; margin-block: 1rem; font-weight: 650; }
+.studio-page-number input { width: 8rem; }
 .studio-empty strong { display: block; }
 .studio-dialog { max-width: calc(100% - 2rem); max-height: calc(100dvh - 2rem); width: 30rem; padding: clamp(1.25rem, 3vw, 2rem); border: 1px solid var(--line, #d6d7cd); border-radius: 1rem; box-shadow: var(--shadow, 0 12px 48px #182a2726); color: var(--ink, #233532); background: var(--surface, #fffcf6); overflow: auto; overflow-wrap: anywhere; }
 .studio-dialog::backdrop { background: #152b28ad; }

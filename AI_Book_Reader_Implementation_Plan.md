@@ -69,7 +69,7 @@ Use four CDK stacks: `ReaderDataStack` (table, media, queues), `ReaderAuthStack`
 
 ### 3.1 Camera and stability
 
-- Start camera/audio setup from an explicit **Start Reading** interaction. Request video only, prefer the rear camera, and use a muted inline preview. Handle denied permissions, missing cameras, camera switching, and playback rejection with visible recovery.
+- Start camera/audio setup from an explicit **Start Recording** interaction. Request video only, prefer the rear camera, and use a muted inline preview. Handle denied permissions, missing cameras, camera switching, and playback rejection with visible recovery.
 - Process motion thumbnails locally at approximately four samples per second. Start with a one-second stable window; tune against real camera footage and keep thresholds configurable.
 - Use a framing guide as the crop. Check motion, minimum crop size, and sharpness; submit the best frame from the stable window. Backend vision confirms that the image is a book page.
 - Preserve OCR detail: start with a 2,560-pixel longest edge and a 4 MiB upload cap. Tune compression using fixtures. If text becomes too small, request a closer single-page capture. Upload only the framed book region and strip image metadata; do not record microphone audio or continuous video.

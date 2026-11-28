@@ -9,7 +9,7 @@ import { BusyDialog } from "./BusyDialog";
 test("the initial reader offers Start without showing a viewfinder or processing dialog", () => {
   const html = renderToStaticMarkup(<Camera book={{id: "earlier", name: "Earlier captures"}} run="test" preview={false} back={() => {}} config={{ camera: {}, recognition_available: true, speech_available: true } as PublicConfig} />);
   expect(html).toMatch(/<div[^>]*hidden[^>]*class="viewfinder"/);
-  expect(html).toContain("Start Reading");
+  expect(html).toContain("Start Recording");
   expect(html).not.toContain(">Submit</button>");
   expect(html).not.toContain("<dialog");
 });
@@ -44,7 +44,7 @@ test("busy feedback announces its stage and has a keyboard-accessible way out", 
 test("cards bound narration excerpts and offer older pages, replay and deletion even without a thumbnail", () => {
   const item: PlayableCapture = { run_id: "run", id: "id", narration: "word ".repeat(35), language: "en", created_at: 10, audio_chunks: 1, thumbnail_url: null };
   const noop = () => {};
-  const history = { items: [item], loading: false, error: false, refreshHistory: noop };
+  const history = { items: [item], loading: false, error: false, refreshHistory: noop, applyPageOrder: noop };
   const html = renderToStaticMarkup(<HistoryCards book={{ id: "book", name: "Story" }} run="run" history={history} disabled={false} play={noop} remove={async () => {}} />);
   expect(html).toContain("Slide Play");
   expect(html).toContain("Delete capture from");

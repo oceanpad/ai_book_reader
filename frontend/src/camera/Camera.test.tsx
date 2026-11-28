@@ -2,13 +2,16 @@
 import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { allBookPages, submitReading } from "../api/client";
+import { allBookPages, moveBookPage, readingAudio, readingOriginal, submitReading } from "../api/client";
 import type { PlayableCapture, PublicConfig } from "../api/contracts.generated";
 import { Camera } from "./Camera";
 import { captureAndStop } from "./frame";
 import { useCamera } from "./useCamera";
 
-vi.mock("../api/client", async importOriginal => ({ ...await importOriginal<typeof import("../api/client")>(), allBookPages: vi.fn(), submitReading: vi.fn() }));
+vi.mock("../api/client", async importOriginal => ({
+  ...await importOriginal<typeof import("../api/client")>(),
+  allBookPages: vi.fn(), moveBookPage: vi.fn(), readingAudio: vi.fn(), readingOriginal: vi.fn(), submitReading: vi.fn(),
+}));
 vi.mock("./frame", async importOriginal => ({ ...await importOriginal<typeof import("./frame")>(), captureAndStop: vi.fn() }));
 vi.mock("./useCamera", async importOriginal => ({ ...await importOriginal<typeof import("./useCamera")>(), useCamera: vi.fn() }));
 
@@ -63,4 +66,56 @@ test.each([
   expect(Array.from(sizes, button => button.disabled)).toEqual([true, true]);
   await act(async () => finishCapture({ blob, mode, width: 800, height: 600 }));
   expect(submitReading).toHaveBeenCalledWith("run", expect.any(String), blob, mode, expect.any(AbortSignal), "book");
+});
+
+test("moving page seven to one renumbers the page list and starts slideshow playback there", async () => {
+  const pages: PlayableCapture[] = Array.from({ length: 7 }, (_, index) => ({
+    id: `id-${index + 1}`, run_id: `capture-run-${index}`, narration: `Original ${index + 1}`,
+    language: "en", created_at: 1, audio_chunks: 1, thumbnail_url: null,
+  }));
+  const moved = [pages[6], ...pages.slice(0, 6)];
+  let saved = false;
+  vi.mocked(allBookPages).mockImplementation(async () => saved ? moved : pages);
+  vi.mocked(moveBookPage).mockRejectedValueOnce(new Error("Could not save. Try again.")).mockImplementation(async () => {
+    saved = true;
+    return { page_order: moved.map(item => `${item.run_id}/${item.id}`) };
+  });
+  vi.mocked(readingOriginal).mockResolvedValue(new Blob(["page"]));
+  vi.mocked(readingAudio).mockResolvedValue(new Blob(["audio"]));
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  await act(async () => root.render(<Camera config={config} book={{ id: "book", name: "Story" }} run="run" preview={false} back={() => {}} />));
+  const pageCards = () => Array.from(host.querySelectorAll(".studio-page-copy"));
+  const option = host.querySelector<HTMLElement>('[aria-label="Page 7 options"]')!;
+  await act(async () => option.click());
+  await act(async () => Array.from(option.parentElement!.querySelectorAll("button")).find(button => button.textContent === "Move to page…")!.click());
+  const dialog = host.querySelector<HTMLDialogElement>('dialog[aria-label="Move page"]')!;
+  expect(dialog.open).toBe(true);
+  expect(dialog.querySelector("h2")?.textContent).toBe("Move page 7");
+  const input = dialog.querySelector("input")!;
+  const submit = dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  const choose = (value: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await choose("8");
+  expect(submit.disabled).toBe(true);
+  await choose("1");
+  expect(submit.disabled).toBe(false);
+  await act(async () => submit.click());
+  expect(dialog.querySelector('[role="alert"]')?.textContent).toContain("Could not save");
+  expect(pageCards()[6].textContent).toContain("Original 7");
+
+  await act(async () => submit.click());
+  expect(moveBookPage).toHaveBeenLastCalledWith("run", "book", {
+    run_id: pages[6].run_id, page_id: pages[6].id, page_number: 1,
+  }, expect.any(AbortSignal));
+  expect(host.contains(dialog)).toBe(false);
+  for (const [index, card] of pageCards().entries()) {
+    expect(card.querySelector("strong")?.textContent).toContain(`Page ${index + 1} ·`);
+    expect(card.textContent).toContain(moved[index].narration);
+  }
+  expect(host.textContent).toContain("Page 7 moved to page 1.");
+  await act(async () => host.querySelector<HTMLButtonElement>(".studio-section-title .studio-actions button")!.click());
+  expect(host.querySelector(".book-slideshow-counter")?.textContent).toBe("Page 1 of 7");
+  expect(readingAudio).toHaveBeenCalledWith(pages[6].run_id, pages[6].id, 0, expect.any(AbortSignal));
 });

@@ -25,6 +25,8 @@ from backend.contracts import (
     BookCover,
     BookLanguage,
     BookLevel,
+    BookPageMove,
+    BookPageOrder,
     Books,
     BookUpdate,
     CaptureStage,
@@ -33,7 +35,7 @@ from backend.contracts import (
     ReadingJob,
     RecentCaptures,
 )
-from backend.local_reader import LocalError
+from backend.local_reader import LocalError, move_page_in_order
 from backend.providers import ProviderError
 
 if TYPE_CHECKING:
@@ -368,12 +370,57 @@ class CloudStore:
             start = {"ExclusiveStartKey": page["LastEvaluatedKey"]}
 
     def check_book(self, owner: str, book_id: str | None) -> None:
-        if book_id is None or book_id == EARLIER.id:
-            return
-        if len(book_id.encode()) > 256 or not self.table.get_item(
-            Key={"PK": f"USER#{owner}", "SK": f"BOOK#{book_id}"}, ConsistentRead=True
-        ).get("Item"):
+        if book_id is not None and book_id != EARLIER.id:
+            self._book_row(owner, book_id)
+
+    def _book_row(self, owner: str, book_id: str) -> dict[str, Any] | None:
+        if len(book_id.encode()) > 256:
             raise LocalError("Book not found.", 404)
+        row = self.table.get_item(
+            Key={"PK": f"USER#{owner}", "SK": f"BOOK#{book_id}"}, ConsistentRead=True
+        ).get("Item")
+        if row is None and book_id != EARLIER.id:
+            raise LocalError("Book not found.", 404)
+        return row
+
+    def move_page(self, owner: str, book_id: str, move: BookPageMove) -> BookPageOrder:
+        book = self._book_row(owner, book_id) or {}
+        if book.get("deleting"):
+            raise LocalError("Book not found.", 404)
+        saved = book.get("pageOrder")
+        rows = sorted(self._history_rows(owner, book_id, None), key=self._history_position)
+        order = move_page_in_order([f"{row['run']}/{row['id']}" for row in rows], saved or [], move)
+
+        # Replace the entire order atomically without touching the capture rows or other metadata.
+        expression = "SET pageOrder=:order"
+        condition = "attribute_not_exists(deleting)"
+        values: dict[str, Any] = {":order": order.page_order}
+        if saved is None:
+            condition += " AND attribute_not_exists(pageOrder)"
+        else:
+            condition += " AND pageOrder=:saved"
+            values[":saved"] = saved
+        params: dict[str, Any] = {}
+        if book_id == EARLIER.id:
+            # Legacy collections may not have a book row until their first edit.
+            expression += ", #n=if_not_exists(#n,:name)"
+            params["ExpressionAttributeNames"] = {"#n": "name"}
+            values[":name"] = EARLIER.name
+        else:
+            condition += " AND attribute_exists(PK)"
+        try:
+            self.table.update_item(
+                Key={"PK": f"USER#{owner}", "SK": f"BOOK#{book_id}"},
+                UpdateExpression=expression,
+                ConditionExpression=condition,
+                ExpressionAttributeValues=values,
+                **params,
+            )
+        except ClientError as exc:
+            if not conditional(exc):
+                raise
+            raise LocalError("The book changed. Refresh and try the move again.", 409) from exc
+        return order
 
     def book_membership_write(
         self, owner: str, book_id: str, run: str, job_id: str
@@ -525,6 +572,10 @@ class CloudStore:
                 return
             start = {"ExclusiveStartKey": page["LastEvaluatedKey"]}
 
+    @staticmethod
+    def _history_position(row: dict[str, Any]) -> tuple[int, int, str, str]:
+        return int(row["createdAt"]), int(row.get("createdNs", 0)), row["run"], row["id"]
+
     def recent(
         self,
         owner: str,
@@ -532,7 +583,12 @@ class CloudStore:
         cursor: str | None = None,
         book_id: str | None = None,
     ) -> RecentCaptures:
-        self.check_book(owner, book_id)
+        order = None
+        if book_id is not None and cursor is None:
+            book = self._book_row(owner, book_id)
+            order = book.get("pageOrder") if book else None
+        else:
+            self.check_book(owner, book_id)
         if not 1 <= limit <= RECENT_CAPTURE_LIMIT:
             raise LocalError("Invalid capture page size.", 400)
         boundary = None
@@ -562,23 +618,22 @@ class CloudStore:
             except (ValueError, TypeError, RecursionError) as exc:
                 raise LocalError("Invalid capture history cursor.", 400) from exc
 
-        def position(row: dict[str, Any]) -> tuple[int, int, str, str]:
-            return int(row["createdAt"]), int(row.get("createdNs", 0)), row["run"], row["id"]
-
         items: list[PlayableCapture] = []
         last = None
         rows = self._history_rows(owner, book_id, boundary[0] if boundary else None)
         # A GSI does not order equal range keys, even across DynamoDB query pages.
         for _, group in groupby(rows, key=lambda row: row["createdAt"]):
-            for item in sorted(group, key=position, reverse=True):
-                key = position(item)
+            for item in sorted(group, key=self._history_position, reverse=True):
+                key = self._history_position(item)
                 if boundary is not None and key >= boundary:
                     continue
                 if len(items) == limit and last is not None:
                     second, nanos, run, job_id = last
                     token = json.dumps([owner, run, job_id, second, book_id, nanos])
                     return RecentCaptures(
-                        items=items, next_cursor=base64.urlsafe_b64encode(token.encode()).decode()
+                        items=items,
+                        next_cursor=base64.urlsafe_b64encode(token.encode()).decode(),
+                        page_order=order,
                     )
                 items.append(
                     PlayableCapture(
@@ -601,7 +656,7 @@ class CloudStore:
                     )
                 )
                 last = key
-        return RecentCaptures(items=items)
+        return RecentCaptures(items=items, page_order=order)
 
     def view(self, item: dict[str, Any]) -> ReadingJob:
         return ReadingJob(

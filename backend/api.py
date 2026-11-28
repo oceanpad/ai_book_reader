@@ -13,8 +13,10 @@ from backend.config import FileSettings, Settings
 from backend.contracts import (
     Book,
     BookCompletion,
-    BookCoverRequest,
     BookCreate,
+    BookPageMove,
+    BookPageOrder,
+    BookPageReference,
     Books,
     BookUpdate,
     CaptureState,
@@ -174,8 +176,14 @@ def create_app(
             return ReadCount(read_count=count)
 
         @app.post("/api/local/books/{book_id}/cover", response_model_exclude_none=True)
-        async def local_cover(book_id: str, x_reader_run: RunId, body: BookCoverRequest) -> Book:
+        async def local_cover(book_id: str, x_reader_run: RunId, body: BookPageReference) -> Book:
             return reader.set_cover(str(x_reader_run), book_id, str(body.run_id), str(body.page_id))
+
+        @app.post("/api/local/books/{book_id}/page-order")
+        async def local_move_page(
+            book_id: str, x_reader_run: RunId, body: BookPageMove
+        ) -> BookPageOrder:
+            return reader.move_page(str(x_reader_run), book_id, body)
 
         @app.patch("/api/local/books/{book_id}", status_code=204)
         def local_update_book(book_id: str, x_reader_run: RunId, body: BookUpdate) -> Response:
@@ -293,10 +301,15 @@ def create_app(
 
         @app.post("/api/books/{book_id}/cover", response_model_exclude_none=True)
         def cloud_cover(
-            book_id: str, request: Request, body: BookCoverRequest, x_reader_run: RunId
+            book_id: str, request: Request, body: BookPageReference, x_reader_run: RunId
         ) -> Book:
             store, owner = cloud(request, "reader/write")
             return store.set_cover(owner, book_id, str(body.run_id), str(body.page_id))
+
+        @app.post("/api/books/{book_id}/page-order")
+        def cloud_move_page(book_id: str, request: Request, body: BookPageMove) -> BookPageOrder:
+            store, owner = cloud(request, "reader/write")
+            return store.move_page(owner, book_id, body)
 
         @app.patch("/api/books/{book_id}", status_code=204)
         def cloud_update_book(book_id: str, request: Request, body: BookUpdate) -> Response:

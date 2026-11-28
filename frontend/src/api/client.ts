@@ -1,4 +1,4 @@
-import type { Book, BookUpdate, HomeworkEntry, HomeworkHistory, HomeworkSubmission, PlayableCapture, PublicConfig, ReadingJob, RecentCaptures } from "./contracts.generated";
+import type { Book, BookPageMove, BookPageOrder, BookUpdate, HomeworkEntry, HomeworkHistory, HomeworkSubmission, PlayableCapture, PublicConfig, ReadingJob, RecentCaptures } from "./contracts.generated";
 import { apiFetch, authEnabled } from "../auth/session";
 
 const readings = authEnabled ? "/api/readings" : "/api/local/readings";
@@ -66,6 +66,13 @@ export async function setBookCover(run: string, bookId: string, page: Pick<Playa
   }))).json();
 }
 
+export async function moveBookPage(run: string, bookId: string, move: BookPageMove, signal: AbortSignal): Promise<BookPageOrder> {
+  return (await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}/page-order`, {
+    method: "POST", signal, headers: { "Content-Type": "application/json", "X-Reader-Run": run },
+    body: JSON.stringify(move),
+  }))).json();
+}
+
 export async function updateBook(run: string, bookId: string, changes: BookUpdate, signal: AbortSignal): Promise<void> {
   await checked(await apiFetch(`${books}/${encodeURIComponent(bookId)}`, {
     method: "PATCH", signal, headers: { "Content-Type": "application/json", "X-Reader-Run": run }, body: JSON.stringify(changes),
@@ -105,14 +112,32 @@ export async function readingRequest(run: string, id: string, signal: AbortSigna
 
 export async function allBookPages(run: string, bookId: string, signal: AbortSignal): Promise<PlayableCapture[]> {
   const pages = new Map<string, PlayableCapture>();
+  let order: string[] | null | undefined;
   let cursor: string | undefined;
   do {
     const result = await recentReadings(run, signal, cursor, bookId);
-    for (const page of result.items) pages.set(`${page.run_id}/${page.id}`, page);
+    if (!cursor) order = result.page_order;
+    for (const page of result.items) pages.set(captureKey(page), page);
     cursor = result.next_cursor ?? undefined;
   } while (cursor);
   // Preserve the server's sub-second capture order, including across batch boundaries.
-  return [...pages.values()].reverse();
+  return applyBookPageOrder([...pages.values()].reverse(), order);
+}
+
+export const captureKey = (page: Pick<PlayableCapture, "run_id" | "id">) => `${page.run_id}/${page.id}`;
+
+export function applyBookPageOrder(pages: PlayableCapture[], order?: string[] | null): PlayableCapture[] {
+  if (!order?.length) return pages;
+  const remaining = new Map(pages.map(page => [captureKey(page), page]));
+  const ordered: PlayableCapture[] = [];
+  for (const key of order) {
+    const page = remaining.get(key);
+    if (page) {
+      ordered.push(page);
+      remaining.delete(key);
+    }
+  }
+  return ordered.concat([...remaining.values()]);
 }
 
 export async function recentReadings(run: string, signal: AbortSignal, cursor?: string, bookId?: string): Promise<RecentCaptures> {

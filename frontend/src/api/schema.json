@@ -132,6 +132,51 @@
       "title": "BookLevel",
       "type": "string"
     },
+    "BookPageMove": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "page_id": {
+          "format": "uuid",
+          "title": "Page Id",
+          "type": "string"
+        },
+        "page_number": {
+          "minimum": 1,
+          "title": "Page Number",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "page_id",
+        "page_number"
+      ],
+      "title": "BookPageMove",
+      "type": "object"
+    },
+    "BookPageOrder": {
+      "additionalProperties": false,
+      "properties": {
+        "page_order": {
+          "description": "Capture keys in book order, formatted as run/page",
+          "items": {
+            "type": "string"
+          },
+          "title": "Page Order",
+          "type": "array"
+        }
+      },
+      "required": [
+        "page_order"
+      ],
+      "title": "BookPageOrder",
+      "type": "object"
+    },
     "BookUpdate": {
       "additionalProperties": false,
       "properties": {
@@ -827,6 +872,22 @@
           ],
           "default": null,
           "title": "Next Cursor"
+        },
+        "page_order": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Saved book order, included only on the first batch when set",
+          "title": "Page Order"
         }
       },
       "required": [
@@ -947,6 +1008,12 @@
     },
     "book_update": {
       "$ref": "#/$defs/BookUpdate"
+    },
+    "book_page_move": {
+      "$ref": "#/$defs/BookPageMove"
+    },
+    "book_page_order": {
+      "$ref": "#/$defs/BookPageOrder"
     }
   },
   "required": [
@@ -962,7 +1029,9 @@
     "vision_result",
     "reading_job",
     "books",
-    "book_update"
+    "book_update",
+    "book_page_move",
+    "book_page_order"
   ],
   "title": "ReaderContracts",
   "type": "object"

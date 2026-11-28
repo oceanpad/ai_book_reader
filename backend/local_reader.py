@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import math
 import sqlite3
@@ -25,6 +26,8 @@ from backend.contracts import (
     BookCover,
     BookLanguage,
     BookLevel,
+    BookPageMove,
+    BookPageOrder,
     Books,
     BookUpdate,
     CaptureStage,
@@ -46,6 +49,25 @@ class LocalError(Exception):
     def __init__(self, message: str, status: int = 400) -> None:
         super().__init__(message)
         self.status = status
+
+
+def move_page_in_order(captured: list[str], saved: list[str], move: BookPageMove) -> BookPageOrder:
+    # Ignore deleted/expired captures and append new ones in capture order.
+    remaining = dict.fromkeys(captured)
+    ordered = []
+    for key in saved:
+        if key in remaining:
+            ordered.append(key)
+            del remaining[key]
+    ordered.extend(remaining)
+    target = f"{move.run_id}/{move.page_id}"
+    if target not in ordered:
+        raise LocalError("Page not found in this book.", 404)
+    if move.page_number > len(ordered):
+        raise LocalError(f"Choose a page number from 1 to {len(ordered)}.", 400)
+    ordered.remove(target)
+    ordered.insert(move.page_number - 1, target)
+    return BookPageOrder(page_order=ordered)
 
 
 def validate_image(data: bytes, settings: Settings) -> bytes:
@@ -141,6 +163,10 @@ class LocalReader:
                 "(owner TEXT, book_id TEXT, completion_id TEXT, "
                 "PRIMARY KEY(owner, book_id, completion_id))"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS book_page_orders "
+                "(owner TEXT, book_id TEXT, page_order TEXT NOT NULL, PRIMARY KEY(owner, book_id))"
+            )
             yield db
 
     def _cover(self, owner: str, book_id: str, page_id: str) -> BookCover | None:
@@ -229,6 +255,32 @@ class LocalReader:
             else self._earliest_pages(owner).get(book_id),
         )
 
+    @staticmethod
+    def _page_order(db: sqlite3.Connection, owner: str, book_id: str) -> list[str] | None:
+        row = db.execute(
+            "SELECT page_order FROM book_page_orders WHERE owner=? AND book_id=?", (owner, book_id)
+        ).fetchone()
+        return list(json.loads(row[0])) if row else None
+
+    def move_page(self, owner: str, book_id: str, move: BookPageMove) -> BookPageOrder:
+        self.expire()
+        with self.book_db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._require_book(db, owner, book_id)
+            jobs = sorted(
+                self._history_jobs(owner, book_id), key=lambda job: (job.created, job.view.id)
+            )
+            order = move_page_in_order(
+                [f"{job.run_id}/{job.view.id}" for job in jobs],
+                self._page_order(db, owner, book_id) or [],
+                move,
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO book_page_orders VALUES (?, ?, ?)",
+                (owner, book_id, json.dumps(order.page_order)),
+            )
+        return order
+
     def complete_book(self, owner: str, book_id: str, completion_id: str) -> int:
         with self.book_db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -300,6 +352,7 @@ class LocalReader:
             db.execute("DELETE FROM book_covers WHERE owner=? AND book_id=?", (owner, book_id))
             db.execute("DELETE FROM book_counts WHERE owner=? AND book_id=?", (owner, book_id))
             db.execute("DELETE FROM book_completions WHERE owner=? AND book_id=?", (owner, book_id))
+            db.execute("DELETE FROM book_page_orders WHERE owner=? AND book_id=?", (owner, book_id))
             for job_id, job in list(self.jobs.items()):
                 if job.run_id == owner and job.book_id == book_id:
                     self.remove(owner, job_id)
@@ -308,10 +361,17 @@ class LocalReader:
         if book_id is None or book_id == EARLIER.id:
             return
         with self.book_db() as db:
-            if not db.execute(
+            self._require_book(db, owner, book_id)
+
+    @staticmethod
+    def _require_book(db: sqlite3.Connection, owner: str, book_id: str) -> None:
+        if (
+            book_id != EARLIER.id
+            and not db.execute(
                 "SELECT 1 FROM books WHERE owner=? AND id=?", (owner, book_id)
-            ).fetchone():
-                raise LocalError("Book not found.", 404)
+            ).fetchone()
+        ):
+            raise LocalError("Book not found.", 404)
 
     def quota(self, kind: str, limit: int) -> None:
         day = datetime.now(UTC).date()
@@ -331,11 +391,27 @@ class LocalReader:
             )
         return job
 
+    def _history_jobs(self, run_id: str, book_id: str | None) -> Iterator[Job]:
+        return (
+            job
+            for job in self.jobs.values()
+            if job.run_id == run_id
+            and (book_id is None or book_id == job.book_id)
+            and job.view.state != CaptureState.CANCELLED
+            and (book_id is not None or job.view.state == CaptureState.READY or job.edited)
+        )
+
     def recent(
         self, run_id: str, cursor: str | None = None, book_id: str | None = None
     ) -> RecentCaptures:
         self.expire()
-        self.check_book(run_id, book_id)
+        order = None
+        if book_id is not None and cursor is None:
+            with self.book_db() as db:
+                self._require_book(db, run_id, book_id)
+                order = self._page_order(db, run_id, book_id)
+        else:
+            self.check_book(run_id, book_id)
         before = math.inf
         last_id = ""
         if cursor is not None:
@@ -349,12 +425,8 @@ class LocalReader:
         jobs = sorted(
             (
                 job
-                for job in self.jobs.values()
-                if job.run_id == run_id
-                and (book_id is None or book_id == job.book_id)
-                and (job.created, job.view.id) < (before, last_id)
-                and job.view.state != CaptureState.CANCELLED
-                and (book_id is not None or job.view.state == CaptureState.READY or job.edited)
+                for job in self._history_jobs(run_id, book_id)
+                if (job.created, job.view.id) < (before, last_id)
             ),
             key=lambda job: (job.created, job.view.id),
             reverse=True,
@@ -383,6 +455,7 @@ class LocalReader:
                 for job in page
             ],
             next_cursor=f"{page[-1].created}:{page[-1].view.id}" if len(jobs) > len(page) else None,
+            page_order=order,
         )
 
     def expire(self) -> None:

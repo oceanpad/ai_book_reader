@@ -412,6 +412,68 @@ def test_successive_captures_keep_latest_ten_playable_in_same_run(tmp_path, monk
         assert client.get(listing, headers=headers, params={"cursor": "invalid"}).status_code == 400
 
 
+def test_local_book_page_moves_shift_numbers_and_preserve_capture_identity(tmp_path):
+    def provider(request):
+        if request.url.path == "/api/v1/chat/completions":
+            return completion(result())
+        return httpx.Response(
+            200, content=b"\x00\x00" * 2400, headers={"content-type": "audio/pcm"}
+        )
+
+    config = settings(local_books_path=str(tmp_path / "books.sqlite3"))
+    _, headers = new_request()
+    run = headers["X-Reader-Run"]
+    with TestClient(create_app(config, transport=httpx.MockTransport(provider))) as client:
+        books = "/api/local/books"
+        book_id = client.post(books, headers=headers, json={"name": "Story"}).json()["id"]
+        listing = f"/api/local/readings?book_id={book_id}"
+        endpoint = f"{books}/{book_id}/page-order"
+        ids = []
+
+        def add_page():
+            path, _ = new_request()
+            assert submit(client, path + f"?book_id={book_id}", headers).status_code == 202
+            job = wait_for_job(client, path, headers)
+            assert job["state"] == "READY"
+            ids.append(job["id"])
+
+        for _ in range(7):
+            add_page()
+        items = client.get(listing, headers=headers).json()["items"]
+        ref = {"run_id": run, "page_id": ids[6]}
+        assert client.post(f"{books}/{book_id}/cover", headers=headers, json=ref).status_code == 200
+        for value, status in [(0, 422), (2.5, 422), ("1", 422), (8, 400)]:
+            assert (
+                client.post(
+                    endpoint, headers=headers, json={**ref, "page_number": value}
+                ).status_code
+                == status
+            )
+        body = {**ref, "page_number": 1}
+        _, stranger = new_request()
+        assert client.post(endpoint, headers=stranger, json=body).status_code == 404
+        assert (
+            client.post(f"{books}/earlier/page-order", headers=headers, json=body).status_code
+            == 404
+        )
+        expected = [f"{run}/{i}" for i in ids[6:] + ids[:6]]
+        assert client.post(endpoint, headers=headers, json=body).json() == {"page_order": expected}
+        reloaded = client.get(listing, headers=headers).json()
+        assert reloaded["page_order"] == expected
+        assert reloaded["items"] == items  # Capture history, media and timestamps are unchanged.
+        [_, book] = client.get(books, headers=headers).json()["items"]
+        assert book["cover"]["page_id"] == ids[6]
+
+        assert client.delete(f"/api/local/readings/{ids[2]}", headers=headers).status_code == 204
+        add_page()
+        body["page_number"] = 3
+        expected = [f"{run}/{ids[i]}" for i in (0, 1, 6, 3, 4, 5, 7)]
+        assert client.post(endpoint, headers=headers, json=body).json() == {"page_order": expected}
+        assert client.delete(f"{books}/{book_id}", headers=headers).status_code == 204
+        with sqlite3.connect(config.local_books_path) as db:
+            assert not db.execute("SELECT 1 FROM book_page_orders").fetchall()
+
+
 @pytest.mark.parametrize(
     "page,expected,speech_calls",
     [

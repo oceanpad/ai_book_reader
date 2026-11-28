@@ -107,6 +107,10 @@ export type Retryable = boolean | null;
 export type Reason = string | null;
 export type ThumbnailUrl = string | null;
 export type NextCursor1 = string | null;
+/**
+ * Saved book order, included only on the first batch when set
+ */
+export type PageOrder = string[] | null;
 export type Mode = "local" | "aws";
 export type SamplesPerSecond = number;
 export type StableWindowMs = number;
@@ -161,6 +165,13 @@ export type ThumbnailUrl1 = string;
 export type ReadCount = number | null;
 export type Items2 = Book[];
 export type Name1 = string | null;
+export type RunId2 = string;
+export type PageId1 = string;
+export type PageNumber = number;
+/**
+ * Capture keys in book order, formatted as run/page
+ */
+export type PageOrder1 = string[];
 
 export interface ReaderContracts {
   homework_submission: HomeworkSubmission;
@@ -176,6 +187,8 @@ export interface ReaderContracts {
   reading_job: ReadingJob;
   books: Books;
   book_update: BookUpdate;
+  book_page_move: BookPageMove;
+  book_page_order: BookPageOrder;
 }
 export interface HomeworkSubmission {
   subject: Subject;
@@ -208,6 +221,7 @@ export interface HomeworkQuestion {
 export interface RecentCaptures {
   items: Items1;
   next_cursor: NextCursor1;
+  page_order?: PageOrder;
 }
 export interface PlayableCapture {
   id: Id1;
@@ -298,4 +312,12 @@ export interface BookUpdate {
   name?: Name1;
   level?: BookLevel | null;
   language?: BookLanguage | null;
+}
+export interface BookPageMove {
+  run_id: RunId2;
+  page_id: PageId1;
+  page_number: PageNumber;
+}
+export interface BookPageOrder {
+  page_order: PageOrder1;
 }

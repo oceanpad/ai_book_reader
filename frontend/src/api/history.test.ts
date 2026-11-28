@@ -55,6 +55,24 @@ test("book playback spans all batches in recording order, even in the same secon
   expect(fetcher.mock.calls.map(([url]) => new URL(url, location.origin).searchParams.get("book_id"))).toEqual(["book", "book"]);
 });
 
+test("book playback applies the saved order across batches and appends new captures", async () => {
+  const { allBookPages, moveBookPage } = await client();
+  const first = { run_id: "older", id: "shared" };
+  const moved = { run_id: "newer", id: "shared" };
+  const added = { run_id: "newer", id: "new" };
+  const saved = ["newer/shared", "older/deleted", "older/shared"];
+  const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ page_order: saved }))
+    .mockResolvedValueOnce(Response.json({ items: [added, moved], page_order: saved, next_cursor: "2" }))
+    .mockResolvedValueOnce(Response.json({ items: [first] }));
+  vi.stubGlobal("fetch", fetcher);
+  const body = { run_id: moved.run_id, page_id: moved.id, page_number: 1 };
+  expect(await moveBookPage("library", "book", body, signal)).toEqual({ page_order: saved });
+  expect(fetcher.mock.calls[0]).toEqual(["/api/local/books/book/page-order", expect.objectContaining({
+    method: "POST", headers: { "X-Reader-Run": "library", "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+  })]);
+  expect(await allBookPages("library", "book", signal)).toEqual([moved, first, added]);
+});
+
 test("retrying a completed read reuses its ID and targets the same book", async () => {
   const { recordCompletedRead } = await client();
   const fetcher = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(Response.json({ read_count: 1 }));

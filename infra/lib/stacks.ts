@@ -256,6 +256,7 @@ export class ReaderApiStack extends Stack {
       ["/api/books", apigw.HttpMethod.POST, "reader/write"],
       ["/api/books/{book_id}/completions", apigw.HttpMethod.POST, "reader/write"],
       ["/api/books/{book_id}/cover", apigw.HttpMethod.POST, "reader/write"],
+      ["/api/books/{book_id}/page-order", apigw.HttpMethod.POST, "reader/write"],
       ["/api/books/{book_id}", apigw.HttpMethod.PATCH, "reader/write"],
       ["/api/books/{book_id}", apigw.HttpMethod.DELETE, "reader/write"],
       ["/api/readings/{job_id}/narration", apigw.HttpMethod.POST, "reader/write"],
